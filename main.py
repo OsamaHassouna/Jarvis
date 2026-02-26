@@ -3,9 +3,27 @@
 # Run this file to start a session: python main.py
 
 import os
-from orchestrator import process, process_briefing, handle_rules_command
+import threading
+import time
+from orchestrator import process, process_briefing, handle_rules_command, handle_memory_command
 from memory import load_memory, update_memory
 from tools.token_tracker import tracker
+
+
+def _thinking_timer(stop_event: threading.Event) -> None:
+    """Prints a live elapsed-time counter while Jarvis processes. Clears itself when done."""
+    start = time.time()
+    while not stop_event.is_set():
+        elapsed = int(time.time() - start)
+        if elapsed < 60:
+            label = f"  Thinking... {elapsed}s"
+        else:
+            m, s = divmod(elapsed, 60)
+            label = f"  Thinking... {m}m {s:02d}s"
+        print(f"\r{label:<35}", end="", flush=True)
+        time.sleep(0.5)
+    # Clear the timer line
+    print(f"\r{' ' * 35}\r", end="", flush=True)
 
 def setup_user():
     """First time setup — ask for user's name."""
@@ -47,11 +65,17 @@ def main():
             if not user_input:
                 continue
 
-            # Phase 8 — /rules and /project rules commands (intercepted before Claude)
+            # Intercept /rules, /project rules, /memory commands before Claude
             if user_input.startswith("/rules") or user_input.lower().startswith("/project rules"):
                 rules_response = handle_rules_command(user_input)
                 if rules_response is not None:
                     print(f"\nJarvis: {rules_response}\n")
+                    print("-" * 50)
+                    continue
+            if user_input.lower().startswith("/memory"):
+                mem_response = handle_memory_command(user_input)
+                if mem_response is not None:
+                    print(f"\nJarvis: {mem_response}\n")
                     print("-" * 50)
                     continue
 
@@ -91,8 +115,15 @@ def main():
                 _attached_content = ""
                 _attached_name = ""
 
-            print("\nJarvis: thinking...\n")
-            response = process(user_input, history)
+            print()
+            stop = threading.Event()
+            t = threading.Thread(target=_thinking_timer, args=(stop,), daemon=True)
+            t.start()
+            try:
+                response = process(user_input, history)
+            finally:
+                stop.set()
+                t.join(timeout=1)
             print(f"Jarvis: {response}\n")
 
             # Show token usage after every task then reset for next

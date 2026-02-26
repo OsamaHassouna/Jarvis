@@ -87,7 +87,11 @@ class JarvisPanel {
                 return;
             }
             const data = await res.json();
-            this._post('response', data.response);
+            const filesWritten = data.files_written ?? [];
+            this._post('response', data.response, {
+                ...(data.tokens ? { tokens: data.tokens } : {}),
+                ...(filesWritten.length > 0 ? { filesWritten } : {}),
+            });
         }
         catch {
             this._post('error', 'Could not connect to Jarvis server.\n\n' +
@@ -107,9 +111,10 @@ class JarvisPanel {
     }
     // Phase 7: Apply a code block to the active editor file
     async _applyCode(code) {
-        const editor = vscode.window.activeTextEditor;
+        // _lastKnownEditor stays set even when the webview panel has focus
+        const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
         if (!editor) {
-            vscode.window.showWarningMessage('Jarvis: No active file to apply code to.');
+            vscode.window.showWarningMessage('Jarvis: No active file to apply code to. Click a file tab first.');
             return;
         }
         await editor.edit(editBuilder => {
@@ -118,8 +123,8 @@ class JarvisPanel {
         });
         vscode.window.showInformationMessage(`Jarvis applied code to ${editor.document.fileName.split(/[\\/]/).pop()}`);
     }
-    _post(command, text) {
-        this._panel.webview.postMessage({ command, text });
+    _post(command, text, extra) {
+        this._panel.webview.postMessage({ command, text, ...extra });
     }
     // ── Cleanup ──────────────────────────────────────────────────────────────
     dispose() {
@@ -228,20 +233,60 @@ class JarvisPanel {
   }
   .apply-btn:hover { opacity: 0.85; }
 
-  /* ── Typing indicator ── */
-  .typing {
-    display: flex; gap: 4px; align-items: center; padding: 8px 10px;
+  /* ── Thinking indicator → transforms into token summary ── */
+  .msg-thinking {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+    font-size: 11px;
+    padding: 4px 10px;
+    background: none;
+    border: none;
   }
-  .typing span {
+  .thinking-dot {
     width: 6px; height: 6px; border-radius: 50%;
-    background: var(--vscode-descriptionForeground);
-    animation: bounce 1.2s ease-in-out infinite;
+    background: #4ec9b0;
+    animation: pulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
   }
-  .typing span:nth-child(2) { animation-delay: 0.2s; }
-  .typing span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes bounce {
-    0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
-    40%           { transform: translateY(-6px); opacity: 1; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.85); }
+    50%       { opacity: 1;   transform: scale(1.1); }
+  }
+  #thinking-timer {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+  }
+
+  /* ── Token summary (what the thinking bubble transforms into) ── */
+  .msg-token-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.75;
+    padding: 2px 10px 4px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .ts-dot {
+    color: #4ec9b0;
+    font-size: 8px;
+    flex-shrink: 0;
+  }
+
+  /* ── Session counter (in header) ── */
+  #session-tokens {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.6;
+    font-family: var(--vscode-editor-font-family, monospace);
+    white-space: nowrap;
   }
 
   /* ── Attachment chip ── */
@@ -410,6 +455,7 @@ class JarvisPanel {
 <div id="header">
   <div id="status-dot"></div>
   <span>Jarvis</span>
+  <span id="session-tokens"></span>
 </div>
 
 <div id="messages">
@@ -494,6 +540,9 @@ class JarvisPanel {
 
   let pendingAttachment = null;
   let isSending = false;
+  let timerInterval = null;
+  let sessionTotalTokens = 0;
+  let sessionTotalCost = 0;
 
   // ── Auto-resize textarea + toggle send button ──
   input.addEventListener('input', () => {
@@ -501,6 +550,24 @@ class JarvisPanel {
     input.style.height = Math.min(input.scrollHeight, 160) + 'px';
     sendBtn.disabled = !input.value.trim() || isSending;
   });
+
+  // ── Format model ID → short name ──
+  function formatModel(modelId) {
+    const m = (modelId || '').match(/claude-(\w+)-(\d+)-(\d+)/);
+    if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' ' + m[2] + '.' + m[3];
+    return modelId || 'Sonnet';
+  }
+
+  // ── Update session token counter in header ──
+  function updateSessionCounter() {
+    const el = document.getElementById('session-tokens');
+    if (el && sessionTotalTokens > 0) {
+      const cost = sessionTotalCost >= 0.01
+        ? '$' + sessionTotalCost.toFixed(2)
+        : '$' + sessionTotalCost.toFixed(5).replace(/0+$/, '');
+      el.textContent = sessionTotalTokens.toLocaleString() + ' tok • ' + cost;
+    }
+  }
 
   // ── Add message bubble ──
   function addMsg(text, cls) {
@@ -526,18 +593,69 @@ class JarvisPanel {
     return div;
   }
 
-  // ── Typing indicator ──
-  let typingEl = null;
+  // ── Thinking indicator with live timer ──
+  // Transforms into a permanent token summary when response arrives.
+  let thinkingEl = null;
+  let thinkingStartMs = 0;
+
   function showTyping() {
-    typingEl = document.createElement('div');
-    typingEl.className = 'typing';
-    typingEl.innerHTML = '<span></span><span></span><span></span>';
-    messages.appendChild(typingEl);
+    thinkingStartMs = Date.now();
+    thinkingEl = document.createElement('div');
+    thinkingEl.className = 'msg msg-thinking';
+    thinkingEl.innerHTML =
+      '<div class="thinking-dot"></div>' +
+      '<span>Thinking&hellip;</span>' +
+      '<span id="thinking-timer">0s</span>';
+    messages.appendChild(thinkingEl);
     messages.scrollTop = messages.scrollHeight;
+
+    const start = Date.now();
+    timerInterval = setInterval(() => {
+      const el = document.getElementById('thinking-timer');
+      if (!el) return;
+      const elapsed = Math.floor((Date.now() - start) / 1000);
+      if (elapsed < 60) {
+        el.textContent = elapsed + 's';
+      } else {
+        const m = Math.floor(elapsed / 60), s = elapsed % 60;
+        el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
+      }
+    }, 500);
   }
-  function hideTyping() {
-    typingEl?.remove();
-    typingEl = null;
+
+  function hideTyping(tokenData) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+    if (!thinkingEl) return;
+
+    const elapsed = Math.round((Date.now() - thinkingStartMs) / 1000);
+    const timeStr = elapsed < 60
+      ? elapsed + 's'
+      : Math.floor(elapsed / 60) + 'm ' + String(elapsed % 60).padStart(2, '0') + 's';
+
+    if (tokenData) {
+      // Transform into permanent token+time summary line
+      const model = formatModel(tokenData.model);
+      const cost = tokenData.cost >= 0.01
+        ? '$' + tokenData.cost.toFixed(2)
+        : '$' + tokenData.cost.toFixed(5).replace(/0+$/, '');
+
+      thinkingEl.className = 'msg-token-summary';
+      thinkingEl.innerHTML =
+        '<span class="ts-dot">&#9679;</span>' +
+        model + ' &bull; ' +
+        tokenData.total.toLocaleString() + ' tokens &bull; ' +
+        cost + ' &bull; ' + timeStr;
+
+      // Accumulate into session header counter
+      sessionTotalTokens += tokenData.total;
+      sessionTotalCost += tokenData.cost;
+      updateSessionCounter();
+    } else {
+      // No token data (error/rules response) — just remove it
+      thinkingEl.remove();
+    }
+    thinkingEl = null;
   }
 
   // ── Attachment helpers ──
@@ -640,13 +758,17 @@ class JarvisPanel {
 
   // ── Handle messages from extension ──
   window.addEventListener('message', (e) => {
-    const { command, text } = e.data;
-    hideTyping();
+    const { command, text, tokens, filesWritten } = e.data;
+    hideTyping(tokens || null);  // transform indicator into token summary
     isSending = false;
     sendBtn.disabled = !input.value.trim();
 
     if (command === 'response') {
       addMsg(text, 'msg-jarvis');
+      if (filesWritten && filesWritten.length > 0) {
+        const names = filesWritten.map(p => p.replace(/\\\\/g, '/').split('/').pop()).join(', ');
+        addMsg('Wrote: ' + names, 'msg-system');
+      }
     } else if (command === 'error') {
       addMsg(text, 'msg-error');
     } else if (command === 'prefill') {
@@ -655,7 +777,6 @@ class JarvisPanel {
       input.focus();
     } else if (command === 'serverStatus') {
       dot.className = text === 'online' ? 'online' : 'offline';
-      dot.classList.add(text === 'online' ? 'online' : 'offline');
     }
   });
 

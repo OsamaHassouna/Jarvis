@@ -130,6 +130,30 @@ def learn_preference(key: str, value: str):
     save_memory(memory)
 
 
+def delete_project(name: str) -> str | None:
+    """
+    Delete a project from memory by name (case-insensitive partial match).
+    Returns the deleted project name, or None if not found.
+    """
+    m = load_memory()
+    name_lower = name.lower()
+    for i, project in enumerate(m["projects"]):
+        if name_lower in project["name"].lower():
+            removed = m["projects"].pop(i)
+            save_memory(m)
+            return removed["name"]
+    return None
+
+
+def delete_all_projects() -> int:
+    """Delete all projects from memory. Returns count of deleted projects."""
+    m = load_memory()
+    count = len(m["projects"])
+    m["projects"] = []
+    save_memory(m)
+    return count
+
+
 def get_project_by_name(name: str) -> dict | None:
     """Find a project by name (case-insensitive partial match)."""
     memory = load_memory()

@@ -6,12 +6,16 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/local/jarvis-assistant"
   },
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -71,5 +75,6 @@
     "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
     "typescript": "^5.3.0"
-  }
+  },
+  "publisher": "jarvis-local"
 }

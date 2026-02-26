@@ -13,7 +13,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Force UTF-8 stdout so emoji in Claude responses don't crash on Windows cp1252
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from config import SERVER_PORT
-from orchestrator import process_for_vscode, process_briefing
+from orchestrator import process_for_vscode, process_briefing, get_last_files_written
+from tools.token_tracker import tracker
 
 
 class JarvisHTTPHandler(BaseHTTPRequestHandler):
@@ -72,7 +73,19 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     attachment_image_type=body.get("attachment_image_type", ""),
                 )
                 print(f"   Jarvis: {response[:80]}...")
-                self._send_json(200, {"response": response})
+
+                # Include token data so the VS Code panel can display it
+                last = tracker.get_last()
+                token_data = None
+                if last:
+                    token_data = {
+                        "model": last["model"],
+                        "input": last["input_tokens"],
+                        "output": last["output_tokens"],
+                        "total": last["total_tokens"],
+                        "cost": last["cost_usd"],
+                    }
+                self._send_json(200, {"response": response, "tokens": token_data, "files_written": get_last_files_written()})
 
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})

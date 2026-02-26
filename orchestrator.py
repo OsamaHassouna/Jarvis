@@ -14,6 +14,7 @@ from memory import (
     update_last_session, get_daily_briefing, get_all_projects_summary, learn_preference,
     get_global_rules, add_global_rule, delete_global_rule,
     get_project_rules, add_project_rule, delete_project_rule,
+    delete_project, delete_all_projects,
 )
 from agents.agent import Agent
 from agents.agent_pool import AgentPool
@@ -603,6 +604,200 @@ def handle_rules_command(message: str, workspace_root: str = "") -> str | None:
     return "Unknown command. Use /project rules to see available options."
 
 
+def handle_memory_command(message: str) -> str | None:
+    """
+    Intercept /memory commands — instant response, no Claude call.
+    Returns a response string if matched, otherwise None.
+
+    /memory                     → show summary (projects + preferences)
+    /memory projects            → list all projects
+    /memory delete <name>       → delete a project by name
+    /memory clear projects      → delete ALL projects
+    /memory clear history       → clear conversation history
+    /memory preferences         → list saved preferences
+    """
+    msg = message.strip()
+    lower = msg.lower()
+
+    if not lower.startswith("/memory"):
+        return None
+
+    after = msg[len("/memory"):].strip()
+    after_lower = after.lower()
+
+    # /memory  or  /memory summary
+    if not after or after_lower == "summary":
+        m = load_memory()
+        projects = m["projects"]
+        prefs = m["user"].get("preferences", {})
+        lines = ["Memory summary:"]
+        lines.append(f"  Projects: {len(projects)}")
+        for p in projects:
+            tasks = len(p.get("tasks_completed", []))
+            lines.append(f"    • {p['name']}  ({', '.join(p.get('stack', [])) or 'unknown stack'})  — {tasks} tasks")
+        if not projects:
+            lines.append("    (none)")
+        pref_count = len(prefs) if isinstance(prefs, dict) else len(prefs) if isinstance(prefs, list) else 0
+        lines.append(f"  Preferences: {pref_count} saved")
+        lines.append(f"  History: {len(m.get('history', []))} messages")
+        lines.append("\nCommands:")
+        lines.append("  /memory delete <name>      — delete a project")
+        lines.append("  /memory clear projects     — delete all projects")
+        lines.append("  /memory clear history      — clear conversation history")
+        return "\n".join(lines)
+
+    # /memory projects
+    if after_lower == "projects":
+        m = load_memory()
+        projects = m["projects"]
+        if not projects:
+            return "No projects in memory.\n\nProjects are added automatically when you run complex tasks."
+        lines = [f"Projects in memory ({len(projects)}):"]
+        for i, p in enumerate(projects, 1):
+            stack = ", ".join(p.get("stack", [])) or "unknown stack"
+            tasks = len(p.get("tasks_completed", []))
+            last = p.get("last_updated", "")[:10] or "never"
+            lines.append(f"  {i}. {p['name']}  ({stack})  — {tasks} tasks, last: {last}")
+        lines.append("\nUse '/memory delete <name>' to remove one.")
+        return "\n".join(lines)
+
+    # /memory delete <name>
+    if after_lower.startswith("delete "):
+        name = after[7:].strip()
+        if not name:
+            return "Usage: /memory delete <project name>"
+        removed = delete_project(name)
+        if removed:
+            return f"Deleted project '{removed}' from memory."
+        return f"No project matching '{name}' found.\n\nUse '/memory projects' to see the list."
+
+    # /memory clear projects
+    if after_lower == "clear projects":
+        count = delete_all_projects()
+        return f"Cleared all {count} project(s) from memory."
+
+    # /memory clear history
+    if after_lower == "clear history":
+        m = load_memory()
+        count = len(m.get("history", []))
+        m["history"] = []
+        save_memory(m)
+        return f"Cleared {count} conversation history messages."
+
+    # /memory preferences
+    if after_lower in ("preferences", "prefs"):
+        m = load_memory()
+        prefs = m["user"].get("preferences", {})
+        if not prefs:
+            return "No preferences saved yet.\n\nSay 'remember: <preference>' and Jarvis will save it."
+        if isinstance(prefs, dict):
+            lines = ["Saved preferences:"] + [f"  • {k}: {v}" for k, v in prefs.items()]
+        else:
+            lines = ["Saved preferences:"] + [f"  • {p}" for p in prefs]
+        lines.append("\nTo add: say 'remember: <your preference>'")
+        return "\n".join(lines)
+
+    return "Unknown /memory command. Use '/memory' to see available options."
+
+
+# ── VS Code file tools (read_file / write_file) ───────────────────────────────
+
+# Tracks files written during the current VS Code request (reset each call)
+_vscode_files_written: list = []
+
+
+def get_last_files_written() -> list:
+    """Return paths of files written during the last process_for_vscode call."""
+    return list(_vscode_files_written)
+
+
+VSCODE_TOOLS = [
+    {
+        "name": "read_file",
+        "description": (
+            "Read the full contents of a file from the workspace. "
+            "Always read a file before editing it so you see the current state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path — relative to workspace root, or absolute."
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Write or overwrite a file with new content. "
+            "Creates the file (and any missing parent directories) if needed. "
+            "Read the file first if it exists — then write the full updated content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path — relative to workspace root, or absolute."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete new file content to write."
+                }
+            },
+            "required": ["path", "content"]
+        }
+    }
+]
+
+
+def _execute_tool(tool_name: str, tool_input: dict, workspace_root: str) -> str:
+    """Execute a file tool call from Claude and return the result as a string."""
+    global _vscode_files_written
+
+    def resolve(path: str) -> str:
+        if workspace_root and not os.path.isabs(path):
+            return os.path.join(workspace_root, path.replace("/", os.sep))
+        return path
+
+    if tool_name == "read_file":
+        path = tool_input.get("path", "")
+        full = resolve(path)
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(12000)
+            truncated = len(content) >= 12000
+            result = f"File: {path}\n{content}"
+            if truncated:
+                result += "\n[... truncated at 12,000 chars ...]"
+            return result
+        except FileNotFoundError:
+            return f"File not found: {path}"
+        except Exception as e:
+            return f"Error reading {path}: {e}"
+
+    if tool_name == "write_file":
+        path = tool_input.get("path", "")
+        content = tool_input.get("content", "")
+        full = resolve(path)
+        try:
+            parent = os.path.dirname(full)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+            rel = os.path.relpath(full, workspace_root).replace("\\", "/") if workspace_root else path
+            _vscode_files_written.append(rel)
+            return f"Written: {path} ({len(content):,} chars)"
+        except Exception as e:
+            return f"Error writing {path}: {e}"
+
+    return f"Unknown tool: {tool_name}"
+
+
 def build_message_with_file_context(
     message: str,
     file_path: str = "",
@@ -663,10 +858,13 @@ def process_for_vscode(
     Uses instant keyword check to redirect complex tasks to the terminal.
     Phase 8: /rules and /project rules commands are intercepted before Claude.
     """
-    # Intercept rules commands — no Claude call needed, instant response
+    # Intercept /rules and /memory commands — no Claude call needed
     rules_response = handle_rules_command(message, workspace_root)
     if rules_response is not None:
         return rules_response
+    mem_response = handle_memory_command(message)
+    if mem_response is not None:
+        return mem_response
 
     update_last_session()
     detect_and_save_preference(message)
@@ -684,9 +882,12 @@ def process_for_vscode(
             f"Then type: {message}"
         )
 
+    global _vscode_files_written
+    _vscode_files_written = []  # reset for this request
+
     context = get_context_summary()
 
-    # Phase 7: Build user content — multimodal if image attached, plain string otherwise
+    # Build user content — multimodal if image attached, plain string otherwise
     if attachment_image_base64:
         user_content = [
             {"type": "text", "text": augmented},
@@ -699,25 +900,60 @@ def process_for_vscode(
     else:
         user_content = augmented
 
-    response = client.messages.create(
-        model=MODEL_SONNET,
-        max_tokens=MAX_TOKENS,
-        system=context,
-        messages=[{"role": "user", "content": user_content}]
-    )
-
+    # Tool use loop — gives Claude real read/write access when a workspace is open.
+    # Without a workspace we fall back to a plain single call (no tool overhead).
     from tools.token_tracker import tracker
+    use_tools = bool(workspace_root)
+    messages = [{"role": "user", "content": user_content}]
+    total_input = total_output = 0
+    final_text = ""
+
+    for _ in range(10):  # safety cap — never more than 10 tool rounds
+        kwargs = dict(
+            model=MODEL_SONNET,
+            max_tokens=MAX_TOKENS,
+            system=context,
+            messages=messages,
+        )
+        if use_tools:
+            kwargs["tools"] = VSCODE_TOOLS
+
+        response = client.messages.create(**kwargs)
+        total_input  += response.usage.input_tokens
+        total_output += response.usage.output_tokens
+
+        if response.stop_reason == "tool_use":
+            # Claude wants to call a file tool — execute it and loop
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = _execute_tool(block.name, block.input, workspace_root)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+            messages.append({"role": "user", "content": tool_results})
+            continue
+
+        # end_turn or any other stop — extract the text and finish
+        for block in response.content:
+            if hasattr(block, "text"):
+                final_text = block.text
+                break
+        break
+
     tracker.log(
         label=f"VS Code: {message[:50]}",
         model=MODEL_SONNET,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens
+        input_tokens=total_input,
+        output_tokens=total_output,
     )
 
     add_to_history("user", message)
-    result = response.content[0].text
-    add_to_history("assistant", result)
-    return result
+    add_to_history("assistant", final_text)
+    return final_text
 
 
 def process(user_input: str, history: list) -> str:

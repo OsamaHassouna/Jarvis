@@ -117,6 +117,10 @@ class TokenTracker:
         if credits:
             print(f"  ──  Remaining credits: {credits}")
 
+    def get_last(self) -> dict | None:
+        """Return the most recently logged entry, or None if nothing logged yet."""
+        return self.entries[-1] if self.entries else None
+
     def reset(self):
         """Reset tracker for next task."""
         self.entries = []
