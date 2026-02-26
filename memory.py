@@ -255,9 +255,14 @@ def get_context_summary() -> str:
     if rules:
         rules_section = "\nUser-defined rules (always follow these):\n" + "\n".join(f"- {r}" for r in rules)
 
+    # Inject only the 3 most recently active projects to keep the prompt lean
+    recent_projects = sorted(
+        projects, key=lambda p: p.get("last_updated", ""), reverse=True
+    )[:3]
+
     summary = f"""You are Jarvis, a personal AI assistant for {user['name'] or 'the user'}.
 User info: name={user['name'] or 'unknown'}, experience={user['experience_level']}
-Known projects: {', '.join([p['name'] for p in projects]) if projects else 'none yet'}
+Known projects (3 most recent): {', '.join([p['name'] for p in recent_projects]) if recent_projects else 'none yet'}
 Coding preferences: {prefs_text}{rules_section}
 {history_text}
 Important: You have persistent memory. You remember past conversations.

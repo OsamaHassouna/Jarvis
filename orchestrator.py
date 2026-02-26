@@ -248,10 +248,14 @@ def handle_complex_task(user_input: str, model: str) -> str:
     if project_context:
         print(f"\n📁 Project context detected:\n{project_context}\n")
 
-    # Phase 6.1: Ask about git auto-commit
-    from tools.git_tools import is_git_repo
+    # Phase 6.1: Ask about git auto-commit + capture rollback checkpoint
+    from tools.git_tools import is_git_repo, git_checkpoint, git_rollback
     auto_git = False
+    rollback_sha = None
     if is_git_repo(working_dir):
+        rollback_sha = git_checkpoint(working_dir)
+        if rollback_sha:
+            print(f"   Checkpoint: {rollback_sha} (rollback available if task fails)")
         git_answer = input("Auto-commit after each agent completes? (yes/no): ").strip().lower()
         auto_git = git_answer in ["yes", "y"]
 
@@ -290,6 +294,10 @@ def handle_complex_task(user_input: str, model: str) -> str:
     pool = AgentPool(agents=agents, working_dir=working_dir)
     summary = pool.execute()
 
+    # Phase 9: clean up handoff scratchpad
+    from tools.handoff import cleanup_handoff
+    cleanup_handoff(working_dir)
+
     # Phase 3.3: Save task results to project memory
     if summary["succeeded"] > 0:
         save_task_to_project(
@@ -299,6 +307,13 @@ def handle_complex_task(user_input: str, model: str) -> str:
             agents_total=summary["total"],
             stack=project_info.get("stack", [])
         )
+
+    # Offer git rollback if agents failed and we have a checkpoint
+    if summary["failed"] > 0 and rollback_sha:
+        rollback_answer = input(f"\nRoll back all changes to checkpoint {rollback_sha}? (yes/no): ").strip().lower()
+        if rollback_answer in ["yes", "y"]:
+            ok, msg = git_rollback(working_dir, rollback_sha)
+            print(f"   Git: {msg}")
 
     # Phase 6.3: Offer browser preview for frontend projects
     from tools.browser import detect_dev_server_url, open_browser_preview
@@ -704,11 +719,47 @@ def handle_memory_command(message: str) -> str | None:
 
 # Tracks files written during the current VS Code request (reset each call)
 _vscode_files_written: list = []
+_vscode_pending_commands: list = []
 
 
 def get_last_files_written() -> list:
     """Return paths of files written during the last process_for_vscode call."""
     return list(_vscode_files_written)
+
+
+def get_pending_commands() -> list:
+    """Return terminal commands queued for user approval during the last process_for_vscode call."""
+    return list(_vscode_pending_commands)
+
+
+def run_single_command(command: str, working_dir: str) -> dict:
+    """
+    Execute a single approved terminal command locally.
+    Returns {success, output, command, working_dir}.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=working_dir or None,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output = (result.stdout + result.stderr).strip()
+        return {
+            "success": result.returncode == 0,
+            "output": output,
+            "command": command,
+            "working_dir": working_dir,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": "Command timed out (120s)", "command": command, "working_dir": working_dir}
+    except Exception as e:
+        return {"success": False, "output": str(e), "command": command, "working_dir": working_dir}
 
 
 VSCODE_TOOLS = [
@@ -750,13 +801,36 @@ VSCODE_TOOLS = [
             },
             "required": ["path", "content"]
         }
+    },
+    {
+        "name": "run_terminal_command",
+        "description": (
+            "Queue a terminal command for the user to approve and run. "
+            "Use this for CLI operations: ng generate, npm install, dotnet build, dotnet run, git commands, etc. "
+            "The user will be shown the command and must click Run before it executes. "
+            "Commands run in the workspace root directory."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The exact command to run, e.g. 'ng generate component login --standalone'"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-line explanation of what this command does and why."
+                }
+            },
+            "required": ["command", "reason"]
+        }
     }
 ]
 
 
 def _execute_tool(tool_name: str, tool_input: dict, workspace_root: str) -> str:
-    """Execute a file tool call from Claude and return the result as a string."""
-    global _vscode_files_written
+    """Execute a tool call from Claude and return the result as a string."""
+    global _vscode_files_written, _vscode_pending_commands
 
     def resolve(path: str) -> str:
         if workspace_root and not os.path.isabs(path):
@@ -794,6 +868,18 @@ def _execute_tool(tool_name: str, tool_input: dict, workspace_root: str) -> str:
             return f"Written: {path} ({len(content):,} chars)"
         except Exception as e:
             return f"Error writing {path}: {e}"
+
+    if tool_name == "run_terminal_command":
+        command = tool_input.get("command", "").strip()
+        reason = tool_input.get("reason", "")
+        if not command:
+            return "Error: command is required."
+        _vscode_pending_commands.append({
+            "command": command,
+            "working_dir": workspace_root,
+            "reason": reason,
+        })
+        return f"[Queued for approval: {command}]"
 
     return f"Unknown tool: {tool_name}"
 
@@ -882,8 +968,9 @@ def process_for_vscode(
             f"Then type: {message}"
         )
 
-    global _vscode_files_written
-    _vscode_files_written = []  # reset for this request
+    global _vscode_files_written, _vscode_pending_commands
+    _vscode_files_written = []      # reset for this request
+    _vscode_pending_commands = []   # reset for this request
 
     context = get_context_summary()
 

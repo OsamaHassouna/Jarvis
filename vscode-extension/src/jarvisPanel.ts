@@ -3,6 +3,7 @@
 // Phase 7 adds: file/image attachment, apply-code-to-file button.
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 
 const JARVIS_SERVER = 'http://localhost:3131';
 
@@ -62,6 +63,8 @@ export class JarvisPanel {
                     await this._checkServer();
                 } else if (msg.command === 'applyCode') {
                     await this._applyCode(msg.code);
+                } else if (msg.command === 'runCommand') {
+                    await this._runCommand(msg.command_str, msg.working_dir, msg.card_id);
                 }
             },
             null,
@@ -87,8 +90,12 @@ export class JarvisPanel {
         const filePath = editor?.document.fileName ?? '';
         const selection = editor?.document.getText(editor?.selection ?? new vscode.Selection(0, 0, 0, 0)) ?? '';
 
-        // Workspace root — lets Jarvis know the project folder
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+        // Workspace root — prefer open folder, fall back to active file's parent directory
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+            ?? (editor && editor.document.uri.scheme === 'file'
+                ? path.dirname(editor.document.uri.fsPath)
+                : '');
+        this._postWorkspaceInfo();
 
         try {
             const res = await fetch(`${JARVIS_SERVER}/chat`, {
@@ -114,11 +121,18 @@ export class JarvisPanel {
                 return;
             }
 
-            const data = await res.json() as { response: string; tokens?: object; files_written?: string[] };
+            const data = await res.json() as {
+                response: string;
+                tokens?: object;
+                files_written?: string[];
+                commands_to_run?: { command: string; working_dir: string; reason: string }[];
+            };
             const filesWritten = data.files_written ?? [];
+            const commandsToRun = data.commands_to_run ?? [];
             this._post('response', data.response, {
                 ...(data.tokens ? { tokens: data.tokens } : {}),
                 ...(filesWritten.length > 0 ? { filesWritten } : {}),
+                ...(commandsToRun.length > 0 ? { commandsToRun } : {}),
             });
 
         } catch {
@@ -138,6 +152,19 @@ export class JarvisPanel {
         } catch {
             this._post('serverStatus', 'offline');
         }
+        this._postWorkspaceInfo();
+    }
+
+    private _postWorkspaceInfo(): void {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
+        let name = '';
+        if (folder) {
+            name = folder.name;
+        } else if (editor && editor.document.uri.scheme === 'file') {
+            name = path.basename(path.dirname(editor.document.uri.fsPath));
+        }
+        this._post('workspaceInfo', name);
     }
 
     // Phase 7: Apply a code block to the active editor file
@@ -157,6 +184,21 @@ export class JarvisPanel {
             editBuilder.replace(fullRange, code);
         });
         vscode.window.showInformationMessage(`Jarvis applied code to ${editor.document.fileName.split(/[\\/]/).pop()}`);
+    }
+
+    // Run an approved terminal command via the server
+    private async _runCommand(command_str: string, working_dir: string, card_id: string): Promise<void> {
+        try {
+            const res = await fetch(`${JARVIS_SERVER}/run-command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: command_str, working_dir }),
+            });
+            const data = await res.json() as { success: boolean; output: string };
+            this._post('commandResult', '', { card_id, success: data.success, output: data.output });
+        } catch {
+            this._post('commandResult', '', { card_id, success: false, output: 'Could not reach Jarvis server.' });
+        }
     }
 
     private _post(command: string, text: string, extra?: Record<string, unknown>): void {
@@ -317,6 +359,19 @@ export class JarvisPanel {
     flex-shrink: 0;
   }
 
+  /* ── Workspace name (in header) ── */
+  #workspace-name {
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 130px;
+  }
+
   /* ── Session counter (in header) ── */
   #session-tokens {
     margin-left: auto;
@@ -360,6 +415,85 @@ export class JarvisPanel {
     padding: 0 2px;
   }
   #clear-attach:hover { color: var(--vscode-editor-foreground); }
+
+  /* ── Terminal command approval card ── */
+  .cmd-card {
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    font-size: 12px;
+  }
+  .cmd-card-header {
+    padding: 5px 10px;
+    background: rgba(128,128,128,0.1);
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+  }
+  .cmd-card-label {
+    font-weight: 600;
+    color: #4ec9b0;
+    flex-shrink: 0;
+  }
+  .cmd-card-reason {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cmd-card-body {
+    padding: 8px 10px;
+  }
+  .cmd-card-code {
+    display: block;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    color: var(--vscode-editor-foreground);
+    word-break: break-all;
+    margin-bottom: 8px;
+  }
+  .cmd-card-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .cmd-run-btn {
+    padding: 3px 12px;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .cmd-run-btn:hover { background: var(--vscode-button-hoverBackground); }
+  .cmd-skip-btn {
+    padding: 3px 10px;
+    background: none;
+    color: var(--vscode-descriptionForeground);
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .cmd-skip-btn:hover { background: rgba(128,128,128,0.1); }
+  .cmd-output {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: var(--vscode-terminal-background, #1e1e1e);
+    color: var(--vscode-terminal-foreground, #d4d4d4);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .cmd-output.success { border-left: 2px solid #4ec9b0; }
+  .cmd-output.failure { border-left: 2px solid #f48771; }
 
   /* ── Input outer (bottom section) ── */
   #input-outer {
@@ -495,6 +629,7 @@ export class JarvisPanel {
 <div id="header">
   <div id="status-dot"></div>
   <span>Jarvis</span>
+  <span id="workspace-name"></span>
   <span id="session-tokens"></span>
 </div>
 
@@ -796,9 +931,67 @@ export class JarvisPanel {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
+  // ── Command card helpers ──
+  let cardCounter = 0;
+
+  function addCommandCard(cmd) {
+    const id = 'cmd-card-' + (++cardCounter);
+    const div = document.createElement('div');
+    div.className = 'cmd-card';
+    div.id = id;
+    div.innerHTML =
+      '<div class="cmd-card-header">' +
+        '<span class="cmd-card-label">Run command?</span>' +
+        '<span class="cmd-card-reason">' + (cmd.reason || '') + '</span>' +
+      '</div>' +
+      '<div class="cmd-card-body">' +
+        '<code class="cmd-card-code">' + cmd.command + '</code>' +
+        '<div class="cmd-card-actions">' +
+          '<button class="cmd-run-btn">Run</button>' +
+          '<button class="cmd-skip-btn">Skip</button>' +
+        '</div>' +
+      '</div>';
+
+    const runBtn = div.querySelector('.cmd-run-btn');
+    const skipBtn = div.querySelector('.cmd-skip-btn');
+
+    runBtn.addEventListener('click', () => {
+      runBtn.disabled = true;
+      skipBtn.disabled = true;
+      runBtn.textContent = 'Running...';
+      vscode.postMessage({ command: 'runCommand', command_str: cmd.command, working_dir: cmd.working_dir, card_id: id });
+    });
+
+    skipBtn.addEventListener('click', () => {
+      div.querySelector('.cmd-card-actions').innerHTML = '<span style="font-size:11px;opacity:0.5">Skipped</span>';
+    });
+
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   // ── Handle messages from extension ──
   window.addEventListener('message', (e) => {
-    const { command, text, tokens, filesWritten } = e.data;
+    const { command, text, tokens, filesWritten, commandsToRun, card_id, success, output } = e.data;
+
+    if (command === 'commandResult') {
+      const card = document.getElementById(card_id);
+      if (card) {
+        const actions = card.querySelector('.cmd-card-actions');
+        if (actions) actions.innerHTML = success
+          ? '<span style="font-size:11px;color:#4ec9b0">Done</span>'
+          : '<span style="font-size:11px;color:#f48771">Failed</span>';
+        if (output) {
+          const pre = document.createElement('div');
+          pre.className = 'cmd-output ' + (success ? 'success' : 'failure');
+          pre.textContent = output;
+          card.querySelector('.cmd-card-body').appendChild(pre);
+        }
+        messages.scrollTop = messages.scrollHeight;
+      }
+      return;
+    }
+
     hideTyping(tokens || null);  // transform indicator into token summary
     isSending = false;
     sendBtn.disabled = !input.value.trim();
@@ -809,6 +1002,9 @@ export class JarvisPanel {
         const names = filesWritten.map(p => p.replace(/\\\\/g, '/').split('/').pop()).join(', ');
         addMsg('Wrote: ' + names, 'msg-system');
       }
+      if (commandsToRun && commandsToRun.length > 0) {
+        commandsToRun.forEach(cmd => addCommandCard(cmd));
+      }
     } else if (command === 'error') {
       addMsg(text, 'msg-error');
     } else if (command === 'prefill') {
@@ -817,6 +1013,9 @@ export class JarvisPanel {
       input.focus();
     } else if (command === 'serverStatus') {
       dot.className = text === 'online' ? 'online' : 'offline';
+    } else if (command === 'workspaceInfo') {
+      const el = document.getElementById('workspace-name');
+      if (el) el.textContent = text ? '— ' + text : '';
     }
   });
 

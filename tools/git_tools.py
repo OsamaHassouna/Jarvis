@@ -51,6 +51,46 @@ def git_commit(directory: str, message: str) -> tuple[bool, str]:
         return False, str(e)
 
 
+def git_checkpoint(directory: str) -> str | None:
+    """
+    Return the current HEAD SHA (short) to use as a rollback point.
+    Returns None if not a git repo or if repo has no commits.
+    """
+    if not is_git_repo(directory):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def git_rollback(directory: str, sha: str) -> tuple[bool, str]:
+    """
+    Hard-reset the working directory to a checkpoint SHA.
+    Returns (success, message).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "reset", "--hard", sha],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            return True, f"Rolled back to {sha}"
+        return False, result.stderr.strip() or "git reset failed"
+    except Exception as e:
+        return False, str(e)
+
+
 def git_auto_commit(directory: str, task: str) -> tuple[bool, str]:
     """
     Stage all changes and commit with a message derived from the task.

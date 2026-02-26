@@ -47,6 +47,9 @@ class Agent:
     auto_git: bool = False
     auto_test: bool = False
     test_command: str = ""
+    # Phase 9: structured output populated after success
+    files_created: List[str] = field(default_factory=list)
+    files_modified: List[str] = field(default_factory=list)
 
     def can_run(self, completed_agent_ids: List[str]) -> bool:
         """Check if all dependencies are completed."""
@@ -64,8 +67,16 @@ class Agent:
         self.status = AgentStatus.RUNNING
         print(f"\n🤖 Agent [{self.id}] starting: {self.task[:60]}...")
 
+        # Phase 9: inject handoff context from completed dependency agents
+        from tools.handoff import build_handoff_context, extract_handoff_data, write_handoff
+        handoff_context = build_handoff_context(self.depends_on, self.working_dir)
+        task_prompt = self.task
+        if handoff_context:
+            task_prompt = f"{handoff_context}\n\n{self.task}"
+            print(f"   Injecting context from {len(self.depends_on)} dependency agent(s)")
+
         result = run_claude_code(
-            task=self.task,
+            task=task_prompt,
             working_dir=self.working_dir,
             context=self.context if self.context else None,
             timeout=600  # 10 minutes per agent
@@ -84,6 +95,22 @@ class Agent:
                     input_tokens=result["tokens"]["input"],
                     output_tokens=result["tokens"]["output"]
                 )
+                last = tracker.get_last()
+                if last:
+                    cost_str = f"${last['cost_usd']:.4f}" if last['cost_usd'] < 0.01 else f"${last['cost_usd']:.2f}"
+                    print(f"   Tokens: {last['total_tokens']:,} ({last['input_tokens']:,} in / {last['output_tokens']:,} out) — {cost_str}")
+
+            # Phase 9: extract structured result and write to handoff scratchpad
+            if self.working_dir and self.output:
+                handoff_data = extract_handoff_data(self.output, self.task)
+                if handoff_data:
+                    write_handoff(self.id, handoff_data, self.working_dir)
+                    self.files_created = handoff_data.get("files_created", [])
+                    self.files_modified = handoff_data.get("files_modified", [])
+                    if self.files_created:
+                        print(f"   Created:  {', '.join(self.files_created)}")
+                    if self.files_modified:
+                        print(f"   Modified: {', '.join(self.files_modified)}")
 
             print(f"✅ Agent [{self.id}] completed successfully")
 

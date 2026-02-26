@@ -13,7 +13,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Force UTF-8 stdout so emoji in Claude responses don't crash on Windows cp1252
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from config import SERVER_PORT
-from orchestrator import process_for_vscode, process_briefing, get_last_files_written
+from orchestrator import (
+    process_for_vscode, process_briefing,
+    get_last_files_written, get_pending_commands, run_single_command,
+)
 from tools.token_tracker import tracker
 
 
@@ -85,12 +88,39 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                         "total": last["total_tokens"],
                         "cost": last["cost_usd"],
                     }
-                self._send_json(200, {"response": response, "tokens": token_data, "files_written": get_last_files_written()})
+                self._send_json(200, {
+                    "response": response,
+                    "tokens": token_data,
+                    "files_written": get_last_files_written(),
+                    "commands_to_run": get_pending_commands(),
+                })
 
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/run-command":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length))
+                command = body.get("command", "").strip()
+                working_dir = body.get("working_dir", "")
+                if not command:
+                    self._send_json(400, {"error": "command is required"})
+                    return
+                print(f"\n[VS Code] Running: {command}")
+                result = run_single_command(command, working_dir)
+                if result["success"]:
+                    print(f"   OK: {result['output'][:60]}")
+                else:
+                    print(f"   Failed: {result['output'][:60]}")
+                self._send_json(200, result)
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
         else:
             self._send_json(404, {"error": "Not found"})
 
