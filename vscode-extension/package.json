@@ -1,0 +1,75 @@
+{
+  "name": "jarvis-assistant",
+  "displayName": "Jarvis Assistant",
+  "description": "Personal AI assistant — auto-starts on VS Code open, full file context",
+  "version": "0.3.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/jarvis-assistant"
+  },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "jarvis.openPanel",
+        "title": "Jarvis: Open Panel",
+        "icon": "$(hubot)"
+      },
+      {
+        "command": "jarvis.askAboutSelection",
+        "title": "Jarvis: Ask About Selection"
+      },
+      {
+        "command": "jarvis.restartServer",
+        "title": "Jarvis: Restart Server"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "jarvis.openPanel",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j"
+      },
+      {
+        "command": "jarvis.askAboutSelection",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorHasSelection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "jarvis.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "jarvis"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Jarvis",
+      "properties": {
+        "jarvis.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to your Jarvis folder (e.g. D:\\Personal\\Jarvis). The extension will auto-start the server from here."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

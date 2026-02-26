@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/python -m pytest tests/ -v)",
+      "Bash(ls -la /d/Personal/Jarvis/tests/test_*.py)"
+    ]
+  }
+}
