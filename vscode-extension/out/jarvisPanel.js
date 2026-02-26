@@ -185,6 +185,8 @@ class JarvisPanel {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
+  html { height: 100%; overflow: hidden; }
+
   body {
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
@@ -192,7 +194,7 @@ class JarvisPanel {
     color: var(--vscode-editor-foreground);
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
     overflow: hidden;
   }
 
@@ -222,7 +224,7 @@ class JarvisPanel {
   #messages {
     flex: 1;
     overflow-y: auto;
-    padding: 12px;
+    padding: 12px 12px 24px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -948,9 +950,14 @@ class JarvisPanel {
       return;
     }
 
-    hideTyping(tokens || null);  // transform indicator into token summary
-    isSending = false;
-    sendBtn.disabled = !input.value.trim();
+    // Only clear the thinking indicator when an actual response or error arrives.
+    // workspaceInfo / serverStatus / prefill arrive while Jarvis is still thinking
+    // and must not collapse the timer prematurely.
+    if (command === 'response' || command === 'error') {
+      hideTyping(tokens || null);
+      isSending = false;
+      sendBtn.disabled = !input.value.trim();
+    }
 
     if (command === 'response') {
       addMsg(text, 'msg-jarvis');
