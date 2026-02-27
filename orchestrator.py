@@ -8,6 +8,7 @@ import anthropic
 import json
 import os
 import re
+import sys
 from config import ANTHROPIC_API_KEY, MODEL_SONNET, MODEL_OPUS, MAX_TOKENS
 from memory import (
     get_context_summary, add_to_history, load_memory, save_memory, save_task_to_project,
@@ -721,6 +722,11 @@ def handle_memory_command(message: str) -> str | None:
 _vscode_files_written: list = []
 _vscode_pending_commands: list = []
 
+# Process tracking — keyed by job_id
+_active_processes: dict = {}   # job_id -> {"process": Popen, "command": str, "pid": int}
+_killed_jobs: set = set()      # job_ids killed by the user (vs natural exit)
+_job_counter: int = 0
+
 
 def get_last_files_written() -> list:
     """Return paths of files written during the last process_for_vscode call."""
@@ -732,34 +738,109 @@ def get_pending_commands() -> list:
     return list(_vscode_pending_commands)
 
 
-def run_single_command(command: str, working_dir: str) -> dict:
+def get_active_processes() -> list:
+    """Return currently running commands (for debugging / status)."""
+    return [
+        {"job_id": jid, "pid": v["pid"], "command": v["command"]}
+        for jid, v in _active_processes.items()
+    ]
+
+
+def _next_job_id() -> str:
+    global _job_counter
+    _job_counter += 1
+    return f"job_{_job_counter}"
+
+
+def _kill_process_tree(proc) -> None:
+    """Kill a process and all its children. Uses taskkill on Windows for full tree kill."""
+    import subprocess as _sp
+    pid = proc.pid
+    if sys.platform == "win32":
+        _sp.run(f"taskkill /F /T /PID {pid}", shell=True, capture_output=True)
+    else:
+        import signal
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except Exception:
+            proc.kill()
+
+
+def kill_command(job_id: str) -> dict:
+    """
+    Kill an active command by job_id.
+    Returns {success, message}.
+    """
+    entry = _active_processes.get(job_id)
+    if not entry:
+        return {"success": False, "message": f"No active command with id '{job_id}'"}
+    _killed_jobs.add(job_id)
+    _kill_process_tree(entry["process"])
+    return {"success": True, "message": f"Killed PID {entry['pid']}: {entry['command'][:60]}"}
+
+
+def run_single_command(command: str, working_dir: str, job_id: str = "") -> dict:
     """
     Execute a single approved terminal command locally.
-    Returns {success, output, command, working_dir}.
+    Tracks the PID so the user can kill it via kill_command().
+    Returns {success, output, command, working_dir, job_id, pid}.
     """
     import subprocess
+    global _active_processes, _killed_jobs
+
+    if not job_id:
+        job_id = _next_job_id()
+
+    proc = None
+    pid = 0
+    output = ""
+    success = False
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=working_dir or None,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
             encoding="utf-8",
             errors="replace",
         )
-        output = (result.stdout + result.stderr).strip()
-        return {
-            "success": result.returncode == 0,
-            "output": output,
-            "command": command,
-            "working_dir": working_dir,
-        }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "output": "Command timed out (120s)", "command": command, "working_dir": working_dir}
+        pid = proc.pid
+        _active_processes[job_id] = {"process": proc, "command": command, "pid": pid}
+        print(f"   PID {pid}: {command[:70]}")
+
+        try:
+            stdout, stderr = proc.communicate(timeout=120)
+            output = (stdout + stderr).strip()
+            success = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            stdout, stderr = proc.communicate()
+            output = (stdout + stderr).strip()
+            output = ("Timed out (120s) — process killed.\n" + output).strip()
+            success = False
+
     except Exception as e:
-        return {"success": False, "output": str(e), "command": command, "working_dir": working_dir}
+        output = str(e)
+        success = False
+    finally:
+        _active_processes.pop(job_id, None)
+        if job_id in _killed_jobs:
+            _killed_jobs.discard(job_id)
+            captured = ("\n" + output) if output else ""
+            output = f"Killed by user.{captured}"
+            success = False
+
+    return {
+        "success": success,
+        "output": output,
+        "command": command,
+        "working_dir": working_dir,
+        "job_id": job_id,
+        "pid": pid,
+    }
 
 
 VSCODE_TOOLS = [

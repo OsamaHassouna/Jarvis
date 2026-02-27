@@ -152,7 +152,7 @@ class JarvisPanel {
             const res = await fetch(`${JARVIS_SERVER}/run-command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: command_str, working_dir }),
+                body: JSON.stringify({ command: command_str, working_dir, job_id: card_id }),
             });
             const data = await res.json();
             this._post('commandResult', '', { card_id, success: data.success, output: data.output });
@@ -437,6 +437,17 @@ class JarvisPanel {
     font-size: 11px;
   }
   .cmd-skip-btn:hover { background: rgba(128,128,128,0.1); }
+  .cmd-kill-btn {
+    padding: 3px 10px;
+    background: none;
+    color: #f48771;
+    border: 1px solid rgba(244,135,113,0.5);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .cmd-kill-btn:hover { background: rgba(244,135,113,0.1); }
+  .cmd-kill-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .cmd-output {
     margin-top: 6px;
     padding: 6px 8px;
@@ -912,16 +923,31 @@ class JarvisPanel {
 
     const runBtn = div.querySelector('.cmd-run-btn');
     const skipBtn = div.querySelector('.cmd-skip-btn');
+    const actionsDiv = div.querySelector('.cmd-card-actions');
 
     runBtn.addEventListener('click', () => {
       runBtn.disabled = true;
-      skipBtn.disabled = true;
       runBtn.textContent = 'Running...';
+      // Replace Skip with Kill button
+      skipBtn.remove();
+      const killBtn = document.createElement('button');
+      killBtn.className = 'cmd-kill-btn';
+      killBtn.textContent = 'Kill';
+      killBtn.addEventListener('click', () => {
+        killBtn.disabled = true;
+        killBtn.textContent = 'Killing...';
+        fetch('http://localhost:3131/kill-command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: id }),
+        }).catch(() => {});
+      });
+      actionsDiv.appendChild(killBtn);
       vscode.postMessage({ command: 'runCommand', command_str: cmd.command, working_dir: cmd.working_dir, card_id: id });
     });
 
     skipBtn.addEventListener('click', () => {
-      div.querySelector('.cmd-card-actions').innerHTML = '<span style="font-size:11px;opacity:0.5">Skipped</span>';
+      actionsDiv.innerHTML = '<span style="font-size:11px;opacity:0.5">Skipped</span>';
     });
 
     messages.appendChild(div);
@@ -936,9 +962,10 @@ class JarvisPanel {
       const card = document.getElementById(card_id);
       if (card) {
         const actions = card.querySelector('.cmd-card-actions');
-        if (actions) actions.innerHTML = success
-          ? '<span style="font-size:11px;color:#4ec9b0">Done</span>'
-          : '<span style="font-size:11px;color:#f48771">Failed</span>';
+        const killed = output && output.startsWith('Killed by user');
+        const label = success ? 'Done' : killed ? 'Killed' : 'Failed';
+        const color = success ? '#4ec9b0' : killed ? '#ce9178' : '#f48771';
+        if (actions) actions.innerHTML = '<span style="font-size:11px;color:' + color + '">' + label + '</span>';
         if (output) {
           const pre = document.createElement('div');
           pre.className = 'cmd-output ' + (success ? 'success' : 'failure');

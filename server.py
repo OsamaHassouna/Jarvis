@@ -8,14 +8,14 @@
 import json
 import sys
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Force UTF-8 stdout so emoji in Claude responses don't crash on Windows cp1252
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from config import SERVER_PORT
 from orchestrator import (
     process_for_vscode, process_briefing,
-    get_last_files_written, get_pending_commands, run_single_command,
+    get_last_files_written, get_pending_commands, run_single_command, kill_command,
 )
 from tools.token_tracker import tracker
 
@@ -106,15 +106,30 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
                 command = body.get("command", "").strip()
                 working_dir = body.get("working_dir", "")
+                job_id = body.get("job_id", "")
                 if not command:
                     self._send_json(400, {"error": "command is required"})
                     return
                 print(f"\n[VS Code] Running: {command}")
-                result = run_single_command(command, working_dir)
-                if result["success"]:
-                    print(f"   OK: {result['output'][:60]}")
-                else:
-                    print(f"   Failed: {result['output'][:60]}")
+                result = run_single_command(command, working_dir, job_id)
+                status = "OK" if result["success"] else "Failed"
+                print(f"   {status} (PID {result.get('pid', '?')}): {result['output'][:60]}")
+                self._send_json(200, result)
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/kill-command":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length))
+                job_id = body.get("job_id", "").strip()
+                if not job_id:
+                    self._send_json(400, {"error": "job_id is required"})
+                    return
+                result = kill_command(job_id)
+                print(f"\n[VS Code] Kill {job_id}: {result['message']}")
                 self._send_json(200, result)
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
@@ -132,7 +147,7 @@ def start_server(port: int = None, block: bool = True) -> HTTPServer:
     block=False → returns server instance (for tests / programmatic use)
     """
     port = port or SERVER_PORT
-    server = HTTPServer(("localhost", port), JarvisHTTPHandler)
+    server = ThreadingHTTPServer(("localhost", port), JarvisHTTPHandler)
     print(f"\nJarvis server running on http://localhost:{port}")
     print("   Connect from VS Code (Ctrl+Shift+J) to open the panel.")
     print("   Press Ctrl+C to stop.\n")
