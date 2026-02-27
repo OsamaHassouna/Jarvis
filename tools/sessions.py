@@ -397,17 +397,23 @@ def generate_better_name(messages: list) -> str:
         import anthropic
         from config import ANTHROPIC_API_KEY, MODEL_HAIKU
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        # Only use user/assistant turns — tool messages (command results) confuse the model
+        clean_msgs = [m for m in messages[:8] if m.get("role") in ("user", "assistant")]
         excerpt = "\n".join(
-            f"{m['role'].upper()}: {m['content'][:150]}"
-            for m in messages[:6]
+            f"{m['role'].upper()}: {m['content'][:120]}"
+            for m in clean_msgs[:6]
         )
         resp = client.messages.create(
             model=MODEL_HAIKU,
-            max_tokens=20,
-            system="Give this conversation a short title (max 6 words). Return only the title.",
+            max_tokens=15,
+            system=(
+                "Return a short title (max 5 words) for this conversation. "
+                "Return ONLY the title — no quotes, no punctuation, no explanation."
+            ),
             messages=[{"role": "user", "content": excerpt}],
         )
-        return resp.content[0].text.strip()[:80]
+        title = resp.content[0].text.strip().strip('"\'').split("\n")[0]
+        return title[:60]
     except Exception:
         return ""
 

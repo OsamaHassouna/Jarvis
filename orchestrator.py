@@ -506,6 +506,62 @@ def _read_jarvisrules_file(workspace_path: str) -> list:
         return []
 
 
+def _handle_session_rename(
+    message: str, session_id: str, workspace_root: str, is_global: bool, session_msgs: list
+) -> dict | None:
+    """
+    Intercept session rename requests — no Claude call needed.
+    Returns {"text": str, "name": str} or None.
+
+    Handles two cases:
+      1. User suggests a name: "rename this session to X" / "call this session X" / etc.
+      2. User wants a generated name: "generate a new name" / "give this session a better name" / etc.
+    """
+    lower = message.lower().strip()
+
+    # ── Case 1: User-supplied name ────────────────────────────────────────────
+    _RENAME_PREFIXES = [
+        "rename this session to ",
+        "rename session to ",
+        "rename to ",
+        "name this session ",
+        "call this session ",
+        "set session name to ",
+        "set the session name to ",
+        "label this session ",
+    ]
+    for prefix in _RENAME_PREFIXES:
+        if lower.startswith(prefix):
+            new_name = message[len(prefix):].strip().strip('"\'')
+            if new_name:
+                update_session_name(session_id, workspace_root, is_global, new_name)
+                return {"text": f'Session renamed to "{new_name}".', "name": new_name}
+
+    # ── Case 2: Generate a name from history ──────────────────────────────────
+    _REGEN_PHRASES = [
+        "generate a new name",
+        "generate a better name",
+        "regenerate the session name",
+        "regenerate session name",
+        "give this session a better name",
+        "rename this session",
+        "rename the session",
+        "suggest a name for this session",
+        "generate a name for this session",
+        "give this session a name",
+        "auto-name this session",
+    ]
+    if any(p in lower for p in _REGEN_PHRASES):
+        new_name = generate_better_name(session_msgs) if session_msgs else ""
+        if not new_name:
+            first_user = next((m["content"] for m in session_msgs if m.get("role") == "user"), "")
+            new_name = auto_name_from_first_message(first_user) if first_user else "New session"
+        update_session_name(session_id, workspace_root, is_global, new_name)
+        return {"text": f'Session renamed to "{new_name}".', "name": new_name}
+
+    return None
+
+
 def handle_rules_command(message: str, workspace_root: str = "") -> str | None:
     """
     Intercept /rules and /project rules commands — no Claude call, instant response.
@@ -1266,7 +1322,7 @@ def process_for_vscode(
     Phase 8: /rules and /project rules commands are intercepted before Claude.
     Phase 10: Per-session message history and project summary injection.
     """
-    global _last_session_id
+    global _last_session_id, _last_session_name
 
     # Intercept /rules and /memory commands — no Claude call needed
     rules_response = handle_rules_command(message, workspace_root)
@@ -1314,6 +1370,12 @@ def process_for_vscode(
             set_active_session(session_id, workspace_root, is_global)
     _last_session_id = session_id
     session_msgs = (sess or {}).get("messages", [])
+
+    # ── Session rename interceptor ────────────────────────────────────────────
+    _rename_result = _handle_session_rename(message, session_id, workspace_root, is_global, session_msgs)
+    if _rename_result is not None:
+        _last_session_name = _rename_result["name"]
+        return _rename_result["text"]
 
     augmented = build_message_with_file_context(
         message, file_path, file_content, selection,
@@ -1426,7 +1488,6 @@ def process_for_vscode(
         if better:
             update_session_name(session_id, workspace_root, is_global, better)
             current_name = better[:80]
-    global _last_session_name
     _last_session_name = current_name
 
     return final_text
