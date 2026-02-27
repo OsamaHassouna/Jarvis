@@ -7,6 +7,23 @@ import * as path from 'path';
 
 const JARVIS_SERVER = 'http://localhost:3131';
 
+/**
+ * Returns true if a command result is worth sending to Jarvis automatically on success.
+ * Trivial commands (dir, ls, echo, type, cat, pwd) are silently dismissed on success;
+ * failures are always reported regardless.
+ */
+function _isMeaningfulCommand(cmd: string): boolean {
+    const c = cmd.trim().toLowerCase();
+    // Trivial: listing / printing / navigation — only useful if they fail
+    const trivialPrefixes = ['dir ', 'dir\r', 'dir\n', 'ls ', 'ls\r', 'ls\n',
+        'echo ', 'type ', 'cat ', 'pwd', 'cd ', 'clear', 'cls'];
+    const trivialExact = ['dir', 'ls', 'pwd', 'clear', 'cls'];
+    if (trivialExact.includes(c)) { return false; }
+    if (trivialPrefixes.some(p => c.startsWith(p))) { return false; }
+    // Meaningful: anything involving build, test, install, git, package managers, etc.
+    return true;
+}
+
 // Shared output channel for debug logging
 let _outputChannel: vscode.OutputChannel | undefined;
 export function setOutputChannel(ch: vscode.OutputChannel): void { _outputChannel = ch; }
@@ -310,11 +327,17 @@ export class JarvisPanel {
             const data = await res.json() as { success: boolean; output: string };
             this._post('commandResult', '', { card_id, success: data.success, output: data.output });
 
-            // Auto-notify Jarvis for every command result so it can interpret and respond
-            const status = data.success ? 'succeeded' : 'FAILED';
-            const notify = `Command ${status}.\n\nCommand: \`${command_str}\`\nOutput:\n${data.output || '(no output)'}`;
-            this._post('startAutoChat', '', { success: data.success });
-            await this._handleSend(notify);
+            // Auto-notify Jarvis only when it's useful:
+            //   - always on failure
+            //   - on success only for meaningful commands (build/test/install/git/etc.)
+            //   - skip trivial listing/navigation commands (dir, ls, echo, cd, type, cat)
+            const shouldNotify = !data.success || _isMeaningfulCommand(command_str);
+            if (shouldNotify) {
+                const status = data.success ? 'succeeded' : 'FAILED';
+                const notify = `Command ${status}.\n\nCommand: \`${command_str}\`\nOutput:\n${data.output || '(no output)'}`;
+                this._post('startAutoChat', '', { success: data.success });
+                await this._handleSend(notify);
+            }
         } catch {
             this._post('commandResult', '', { card_id, success: false, output: 'Could not reach Jarvis server.' });
         }

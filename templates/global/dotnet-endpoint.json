@@ -1,0 +1,35 @@
+{
+  "name": "dotnet-endpoint",
+  "description": "Full .NET API endpoint: DTOs, service method, controller action, and xUnit tests",
+  "trigger_phrases": [
+    "new dotnet endpoint",
+    "new api endpoint",
+    "add api endpoint",
+    "new controller action",
+    "add dotnet endpoint"
+  ],
+  "agents": [
+    {
+      "id": "dto",
+      "task": "Create the request and response DTO classes for the new endpoint. Follow the project's existing naming conventions (e.g. XxxRequest / XxxResponse or XxxDto). Add data annotations for validation where appropriate. Place them in the correct Models or DTOs folder.",
+      "depends_on": []
+    },
+    {
+      "id": "service",
+      "task": "Add the business logic method to the appropriate service class (or create a new one if needed). Inject the required dependencies via constructor. Include proper error handling, logging, and return the response DTO. Register the service in DI if it is new.",
+      "depends_on": ["dto"]
+    },
+    {
+      "id": "controller",
+      "task": "Add the controller action method. Use the correct HTTP verb attribute ([HttpGet]/[HttpPost]/etc.), route template, and [FromBody]/[FromQuery] bindings. Validate ModelState. Call the service and return appropriate ActionResult<T>. Follow existing controller patterns in the project.",
+      "depends_on": ["dto", "service"]
+    },
+    {
+      "id": "tests",
+      "task": "Write xUnit tests for the controller and service. Use Moq to mock dependencies. Cover: happy path, validation failures, service throwing exceptions, correct HTTP status codes returned by the controller.",
+      "depends_on": ["controller", "service"]
+    }
+  ],
+  "use_count": 0,
+  "created_at": "2026-02-28T00:00:00+00:00"
+}

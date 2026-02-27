@@ -235,6 +235,8 @@ def handle_complex_task(user_input: str, model: str) -> str:
     # Get agent definitions from Claude
     try:
         agent_definitions, breakdown_tokens = breakdown_into_agents(user_input, model)
+        global _last_agent_defs
+        _last_agent_defs = list(agent_definitions)   # save for /template save
         from tools.token_tracker import tracker
         tracker.log(
             label=f"Task breakdown: {user_input[:50]}",
@@ -562,6 +564,120 @@ def _handle_session_rename(
     return None
 
 
+def handle_template_command(message: str, workspace_root: str = "") -> str | None:
+    """
+    Intercept /template commands — no Claude call needed for CRUD operations.
+    Returns response string or None (pass to Claude).
+
+    Commands:
+      /template list
+      /template info <name>
+      /template use <name>
+      /template use <name> for <context>
+      /template save <name>
+      /template delete <name>
+    """
+    from tools.templates import (
+        list_templates, get_template, save_template, delete_template,
+        format_template_list, format_template_info, build_agent_defs_from_template,
+        increment_use_count,
+    )
+
+    msg = message.strip()
+    lower = msg.lower()
+
+    if not lower.startswith("/template"):
+        return None
+
+    after = msg[9:].strip()          # everything after "/template"
+    after_lower = after.lower()
+
+    # ── /template  or  /template list ────────────────────────────────────────
+    if not after or after_lower == "list":
+        return format_template_list(list_templates(workspace_root))
+
+    # ── /template info <name> ─────────────────────────────────────────────────
+    if after_lower.startswith("info "):
+        name = after[5:].strip()
+        t = get_template(name, workspace_root)
+        if not t:
+            return f'Template "{name}" not found. Use `/template list` to see available templates.'
+        return format_template_info(t)
+
+    # ── /template use <name>  or  /template use <name> for <context> ─────────
+    if after_lower.startswith("use "):
+        rest = after[4:].strip()
+        # Split on " for " to extract optional context
+        context = ""
+        if " for " in rest.lower():
+            idx = rest.lower().index(" for ")
+            name = rest[:idx].strip()
+            context = rest[idx + 5:].strip()
+        else:
+            name = rest
+
+        t = get_template(name, workspace_root)
+        if not t:
+            templates = list_templates(workspace_root)
+            if templates:
+                names = ", ".join(t2["name"] for t2 in templates)
+                return f'Template "{name}" not found.\n\nAvailable: {names}'
+            return f'Template "{name}" not found. No templates saved yet.'
+
+        # Return a sentinel — process() / process_for_vscode() will handle execution
+        agent_defs = build_agent_defs_from_template(t, context)
+        # Store for immediate use by handle_complex_task path
+        global _last_agent_defs
+        _last_agent_defs = agent_defs
+        increment_use_count(name, workspace_root)
+
+        ctx_line = f" for: {context}" if context else ""
+        agents_preview = "\n".join(
+            f"  [{a['id']}] {a['task'][:70]}"
+            + (f" (after: {', '.join(a['depends_on'])})" if a.get("depends_on") else "")
+            for a in agent_defs
+        )
+        return (
+            f"Template \"{t['name']}\"{ctx_line}\n\n"
+            f"Agents ({len(agent_defs)}):\n{agents_preview}\n\n"
+            "Open a terminal and run:\n\n"
+            f"  python main.py\n\n"
+            f"Then type: /template use {name}"
+            + (f" for {context}" if context else "")
+        )
+
+    # ── /template save <name> ─────────────────────────────────────────────────
+    if after_lower.startswith("save "):
+        name = after[5:].strip()
+        if not name:
+            return "Usage: `/template save <name>`"
+
+        agents = get_last_agent_defs()
+        if not agents:
+            return (
+                "No recent agent breakdown to save.\n\n"
+                "Run a complex task first (in terminal), then save the breakdown as a template."
+            )
+
+        scope = "project" if workspace_root else "global"
+        path = save_template(name, agents, workspace_root)
+        return (
+            f'Template "{name}" saved ({scope}, {len(agents)} agents).\n\n'
+            f"Run it later with: `/template use {name}`"
+        )
+
+    # ── /template delete <name> ───────────────────────────────────────────────
+    if after_lower.startswith("delete "):
+        name = after[7:].strip()
+        if not name:
+            return "Usage: `/template delete <name>`"
+        if delete_template(name, workspace_root):
+            return f'Template "{name}" deleted.'
+        return f'Template "{name}" not found.'
+
+    return f'Unknown /template command: "{after}"\n\nUsage: /template list | use | save | delete | info'
+
+
 def handle_rules_command(message: str, workspace_root: str = "") -> str | None:
     """
     Intercept /rules and /project rules commands — no Claude call, instant response.
@@ -856,6 +972,15 @@ def _natural_memory_delete(message: str) -> str | None:
             return f"No project matching '{name}' found. Use '/memory projects' to see the list."
 
     return None
+
+
+# ── Template tracking (last breakdown, so /template save can grab it) ─────────
+
+_last_agent_defs: list = []   # set by handle_complex_task after breakdown
+
+
+def get_last_agent_defs() -> list:
+    return list(_last_agent_defs)
 
 
 # ── VS Code session tracking ──────────────────────────────────────────────────
@@ -1324,10 +1449,13 @@ def process_for_vscode(
     """
     global _last_session_id, _last_session_name
 
-    # Intercept /rules and /memory commands — no Claude call needed
+    # Intercept /rules, /template, and /memory commands — no Claude call needed
     rules_response = handle_rules_command(message, workspace_root)
     if rules_response is not None:
         return rules_response
+    tmpl_response = handle_template_command(message, workspace_root)
+    if tmpl_response is not None:
+        return tmpl_response
     mem_response = handle_memory_command(message)
     if mem_response is not None:
         return mem_response
@@ -1493,11 +1621,84 @@ def process_for_vscode(
     return final_text
 
 
+def _run_template_in_terminal(user_input: str) -> None:
+    """
+    Called when the user types /template use <name> [for <ctx>] in terminal mode.
+    Uses the agent defs already stored in _last_agent_defs by handle_template_command.
+    Skips the AI breakdown step entirely.
+    """
+    agent_definitions = get_last_agent_defs()
+    if not agent_definitions:
+        print("No agent definitions found — template may be empty.")
+        return
+
+    print(f"\nTemplate plan ({len(agent_definitions)} agents):")
+    print("=" * 50)
+    for a in agent_definitions:
+        deps = a.get("depends_on", [])
+        dep_str = f" (after: {', '.join(deps)})" if deps else " (independent)"
+        print(f"  [{a['id']}] {a['task'][:70]}{dep_str}")
+    print("=" * 50)
+
+    confirm = input("\nProceed? (yes/no): ").strip().lower()
+    if confirm not in ["yes", "y"]:
+        print("Cancelled.")
+        return
+
+    working_dir = get_working_directory(user_input[:50])
+    if not working_dir:
+        print("No working directory selected. Cancelled.")
+        return
+
+    from tools.project_scanner import scan_project, get_context_string
+    from tools.git_tools import is_git_repo, git_checkpoint, git_rollback
+    from agents.agent_pool import AgentPool
+    from tools.handoff import cleanup_handoff
+
+    project_info = scan_project(working_dir)
+    project_context = get_context_string(project_info)
+    if project_context:
+        print(f"\nProject context:\n{project_context}\n")
+
+    auto_git = False
+    rollback_sha = None
+    if is_git_repo(working_dir):
+        ans = input("Auto-commit each agent's work? (yes/no): ").strip().lower()
+        auto_git = ans in ["yes", "y"]
+        rollback_sha = git_checkpoint(working_dir)
+
+    pool = AgentPool(
+        agent_definitions,
+        working_dir=working_dir,
+        project_context=project_context,
+        auto_git=auto_git,
+        auto_test=False,
+    )
+    results = pool.execute()
+
+    failed = [r for r in results if not r.get("success")]
+    if failed and rollback_sha:
+        ans = input(f"\n{len(failed)} agent(s) failed. Roll back git to checkpoint? (yes/no): ").strip().lower()
+        if ans in ["yes", "y"]:
+            git_rollback(working_dir, rollback_sha)
+
+    cleanup_handoff(working_dir)
+
+
 def process(user_input: str, history: list) -> str:
     """Main entry point — route task to simple or complex handler."""
     update_last_session()
     detect_and_save_preference(user_input)
     add_to_history("user", user_input)
+
+    # Intercept /template commands before complexity classification
+    tmpl_response = handle_template_command(user_input)
+    if tmpl_response is not None:
+        # /template use: redirect message is returned but also run agents if in terminal
+        if user_input.lower().strip().startswith("/template use "):
+            _run_template_in_terminal(user_input)
+        add_to_history("assistant", tmpl_response)
+        return tmpl_response
 
     # Phase 3.1: Use AI to classify complexity and select model
     classification = ai_classify_task(user_input)

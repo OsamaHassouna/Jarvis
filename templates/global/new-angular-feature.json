@@ -1,0 +1,34 @@
+{
+  "name": "new-angular-feature",
+  "description": "Standalone component, service, route wiring, and unit tests",
+  "trigger_phrases": [
+    "new angular feature",
+    "new angular component",
+    "add angular feature",
+    "add angular component"
+  ],
+  "agents": [
+    {
+      "id": "component",
+      "task": "Create a new Angular standalone component. Include: TypeScript class with proper inputs/outputs, HTML template, SCSS styles. Follow Angular 17+ patterns (standalone: true, inject() for DI, signals where appropriate). Name the component based on the feature context.",
+      "depends_on": []
+    },
+    {
+      "id": "service",
+      "task": "Create an Angular service for the feature. Include: injectable service with HttpClient for any API calls, typed interfaces/models for the data, error handling with catchError. Use Angular's inject() function instead of constructor injection.",
+      "depends_on": []
+    },
+    {
+      "id": "routing",
+      "task": "Wire up the new component to the Angular router. Add a lazy-loaded route to the appropriate routing file. If a nav menu or sidebar exists, add a link to it.",
+      "depends_on": ["component"]
+    },
+    {
+      "id": "tests",
+      "task": "Write unit tests for both the component and the service. Use Jasmine/Jest with TestBed for the component and HttpClientTestingModule for the service. Cover: component renders, service methods return correct data, error states.",
+      "depends_on": ["component", "service"]
+    }
+  ],
+  "use_count": 0,
+  "created_at": "2026-02-28T00:00:00+00:00"
+}

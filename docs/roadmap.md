@@ -1,6 +1,6 @@
 # Jarvis — Full Roadmap & Vision
 **Last Updated:** February 2026
-**Current Status:** Phase 10 Complete ✅ | 175/175 tests passing
+**Current Status:** Phase 11 Complete ✅ | 195/195 tests passing
 
 ---
 
@@ -59,36 +59,30 @@ session history, with a drawer to switch between sessions.
 
 ---
 
-## Phase 11 — Task Templates / Playbooks
-**Priority: HIGH for Osama (Angular + .NET patterns repeat constantly)**
-**Goal:** Define reusable agent blueprints for patterns you run frequently, so you don't
-re-describe the same breakdown every time.
+## Phase 11 — Task Templates / Playbooks ✅ Complete
 
-### What to build:
-A `templates/` directory with JSON playbooks:
-```json
-{
-  "name": "new-angular-feature",
-  "trigger_phrases": ["new angular feature", "new component", "add feature"],
-  "agents": [
-    { "id": "component", "task": "Create Angular standalone component with HTML/SCSS template" },
-    { "id": "service",   "task": "Create service with HTTP calls", "depends_on": [] },
-    { "id": "spec",      "task": "Write unit tests for component and service", "depends_on": ["component", "service"] }
-  ]
-}
-```
+**Goal:** Reusable multi-agent blueprints for patterns that repeat (Angular features, .NET endpoints, EF migrations, auth guards). Skip the AI breakdown — run the template directly.
+
+### What was built:
+- `tools/templates.py` — CRUD + trigger phrase matching + formatting helpers
+- 4 built-in global templates: `new-angular-feature`, `dotnet-endpoint`, `angular-auth-guard`, `dotnet-ef-migration`
+- `handle_template_command()` interceptor in `orchestrator.py` — handles all `/template` subcommands
+- `_run_template_in_terminal()` — executes agents directly from template (no AI breakdown step)
+- `_last_agent_defs` global — captures every agent breakdown so `/template save` works
+- Storage: `templates/global/` + `templates/projects/<hash>/` (mirrors sessions layout)
+- **20 tests** — all passing
 
 Commands:
 ```
-/template list                    → list all saved templates
-/template use new-angular-feature → run this template for current project
-/template save "name"             → save last agent breakdown as a template
-/template edit "name"             → open template JSON for editing
+/template list
+/template info <name>
+/template use <name>
+/template use <name> for <context>
+/template save <name>
+/template delete <name>
 ```
 
-**Estimated tests:** 8-10
-**Effort:** 1-2 sessions
-**Impact:** Massive time saver for Angular/`.NET` patterns you repeat 10x per week
+**See:** [phase11_plan.md](phase11_plan.md)
 
 ---
 
@@ -216,7 +210,7 @@ Given your stack (Angular + .NET, VS Code user) and current state:
 
 | Priority | Item | Why | Effort |
 |---|---|---|---|
-| 1 | **Phase 11** (templates) | Daily time saver for Angular/.NET patterns | 1-2 sessions |
+| 1 | ~~**Phase 11** (templates)~~ | ✅ Done | — |
 | 2 | **Phase 12** (VS Code parity) | Makes VS Code a real interface | 3-4 sessions |
 | 3 | **Phase 13** (learning) | Needs time + data to be useful | 1-2 sessions |
 | 4 | **Phase 14** (multi-project) | Only needed for large multi-repo work | 2-3 sessions |
@@ -285,12 +279,13 @@ You (terminal, VS Code, any machine)
 | Phase 8 | 22 | ✅ All passing |
 | Phase 9 | 15 | ✅ All passing |
 | Phase 10 | 21 | ✅ All passing |
-| **Total** | **175 passing** | |
+| Phase 11 | 20 | ✅ All passing |
+| **Total** | **195 passing** | |
 
 ---
 
 ## Phase docs
-[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md)
+[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md)
 
 ## How to continue in a new session
 Start with: `docs/roadmap.md` + the relevant phase doc + specific files.

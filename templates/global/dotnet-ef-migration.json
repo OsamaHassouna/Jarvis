@@ -1,0 +1,35 @@
+{
+  "name": "dotnet-ef-migration",
+  "description": "EF Core entity, DbContext update, repository, and migration",
+  "trigger_phrases": [
+    "new ef entity",
+    "new database entity",
+    "add ef migration",
+    "new entity framework model",
+    "add dotnet model"
+  ],
+  "agents": [
+    {
+      "id": "entity",
+      "task": "Create the EF Core entity class. Add appropriate data annotations or fluent API configuration. Include navigation properties for any relationships. Follow existing entity conventions in the project (naming, base classes, auditing fields).",
+      "depends_on": []
+    },
+    {
+      "id": "dbcontext",
+      "task": "Add the new DbSet<TEntity> to the DbContext. If using fluent API, add the entity configuration in OnModelCreating. If the project uses IEntityTypeConfiguration, create a separate configuration class.",
+      "depends_on": ["entity"]
+    },
+    {
+      "id": "repository",
+      "task": "Create a repository (or extend an existing one) with methods for the new entity: GetByIdAsync, GetAllAsync, AddAsync, UpdateAsync, DeleteAsync. Follow the project's repository pattern (interface + implementation). Register in DI.",
+      "depends_on": ["entity", "dbcontext"]
+    },
+    {
+      "id": "migration",
+      "task": "Generate and review the EF Core migration command for the new entity. Output the exact dotnet CLI command to run: 'dotnet ef migrations add <MigrationName> && dotnet ef database update'. Document any manual steps if the migration needs customization.",
+      "depends_on": ["dbcontext"]
+    }
+  ],
+  "use_count": 0,
+  "created_at": "2026-02-28T00:00:00+00:00"
+}
