@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
-import { JarvisPanel } from './jarvisPanel';
+import { JarvisPanel, setOutputChannel } from './jarvisPanel';
 
 let serverProcess: cp.ChildProcess | undefined;
 let statusBar: vscode.StatusBarItem;
@@ -12,6 +12,7 @@ let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext): void {
     outputChannel = vscode.window.createOutputChannel('Jarvis Server');
+    setOutputChannel(outputChannel);
 
     // Status bar item — bottom right, always visible
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

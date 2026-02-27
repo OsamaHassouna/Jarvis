@@ -302,7 +302,8 @@ Behavior rules:
 - You CANNOT execute commands in terminal mode. Never say "I'll run it", "Noted", or imply you will execute anything. The user must copy-paste and run the command themselves.
 - If the user says "approve", "run it", or "execute", respond: "Terminal mode can't run commands directly — copy the command above and paste it in your terminal."
 - You CAN manage memory. If the user asks to delete, forget, or clear a project, tell them the exact command: '/memory delete <name>'. Never say you can't manage memory — the /memory commands handle everything.
-- Never spawn agents or sub-tasks to delete from memory. Always direct the user to the /memory commands."""
+- Never spawn agents or sub-tasks to delete from memory. Always direct the user to the /memory commands.
+- IMPORTANT: /memory, /rules, /project commands are Jarvis internal commands typed at the You: prompt — NEVER wrap them in a ```bash or ``` code block. Show them as plain text only."""
 
     return summary.strip()
 

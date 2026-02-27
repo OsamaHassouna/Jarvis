@@ -7,6 +7,11 @@ import * as path from 'path';
 
 const JARVIS_SERVER = 'http://localhost:3131';
 
+// Shared output channel for debug logging
+let _outputChannel: vscode.OutputChannel | undefined;
+export function setOutputChannel(ch: vscode.OutputChannel): void { _outputChannel = ch; }
+function dbg(msg: string): void { _outputChannel?.appendLine('[JarvisPanel] ' + msg); }
+
 export class JarvisPanel {
     public static currentPanel: JarvisPanel | undefined;
 
@@ -76,6 +81,12 @@ export class JarvisPanel {
                     await this._loadAllSessions();
                 } else if (msg.command === 'loadSession') {
                     await this._loadSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+                } else if (msg.command === 'openFile') {
+                    try {
+                        const uri = vscode.Uri.file(msg.path);
+                        const doc = await vscode.workspace.openTextDocument(uri);
+                        await vscode.window.showTextDocument(doc);
+                    } catch { /* file may not exist yet */ }
                 }
             },
             null,
@@ -171,16 +182,19 @@ export class JarvisPanel {
     }
 
     private async _checkServer(): Promise<void> {
+        dbg('_checkServer() called');
         try {
             const res = await fetch(`${JARVIS_SERVER}/status`);
             const data = await res.json() as { status: string };
             const isOnline = data.status === 'running';
+            dbg('server status: ' + (isOnline ? 'online' : 'offline') + ' (data.status=' + data.status + ')');
             this._post('serverStatus', isOnline ? 'online' : 'offline');
             if (isOnline && !this._sessionRestored) {
                 this._sessionRestored = true;
                 await this._restoreActiveSession();
             }
-        } catch {
+        } catch (err) {
+            dbg('_checkServer() catch: ' + String(err));
             this._post('serverStatus', 'offline');
         }
         this._postWorkspaceInfo();
@@ -525,24 +539,32 @@ export class JarvisPanel {
 
   .msg {
     max-width: 100%;
-    padding: 8px 10px;
+    padding: 4px 10px 6px;
     border-radius: 6px;
-    white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.5;
   }
   .msg-user {
-    background: var(--vscode-inputOption-activeBackground);
-    border-left: 3px solid var(--vscode-focusBorder);
+    background: var(--vscode-inputOption-activeBackground, rgba(78,201,176,0.08));
+    border-left: 3px solid var(--vscode-focusBorder, #4ec9b0);
     align-self: flex-end;
+    white-space: pre-wrap;
+    padding: 8px 10px;
+    font-size: 13px;
   }
+  /* Jarvis messages: no background bubble — Claude Code style */
   .msg-jarvis {
-    background: var(--vscode-editor-inactiveSelectionBackground);
-    border-left: 3px solid #4ec9b0;
+    background: none;
+    border-left: 2px solid rgba(78,201,176,0.4);
+    padding-left: 12px;
+    padding-top: 2px;
+    padding-bottom: 2px;
   }
   .msg-error {
     background: var(--vscode-inputValidation-errorBackground);
     border-left: 3px solid var(--vscode-inputValidation-errorBorder);
+    white-space: pre-wrap;
+    padding: 8px 10px;
   }
   .msg-system {
     color: var(--vscode-descriptionForeground);
@@ -551,19 +573,113 @@ export class JarvisPanel {
     padding: 4px;
   }
 
-  /* ── Apply code button ── */
-  .apply-btn {
-    display: inline-block;
-    margin-top: 6px;
-    padding: 3px 8px;
-    font-size: 11px;
-    background: var(--vscode-button-secondaryBackground, #3a3d41);
-    color: var(--vscode-button-secondaryForeground, #cccccc);
-    border: 1px solid var(--vscode-button-border, transparent);
-    border-radius: 4px;
-    cursor: pointer;
+  /* ── Markdown rendered content ── */
+  .msg-jarvis .md-p   { margin: 3px 0 5px; font-size: 13px; }
+  .msg-jarvis .md-h   { font-weight: 700; margin: 10px 0 4px; color: var(--vscode-editor-foreground); }
+  .msg-jarvis h1.md-h { font-size: 15px; }
+  .msg-jarvis h2.md-h { font-size: 14px; }
+  .msg-jarvis h3.md-h { font-size: 13px; }
+  .msg-jarvis .md-ul, .msg-jarvis .md-ol { padding-left: 22px; margin: 4px 0 6px; font-size: 13px; }
+  .msg-jarvis .md-ul li, .msg-jarvis .md-ol li { margin: 2px 0; }
+  .msg-jarvis .md-gap { height: 6px; }
+  .msg-jarvis .md-hr  { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 8px 0; }
+  .msg-jarvis .md-link { color: #4ec9b0; text-decoration: underline; cursor: default; }
+  .md-icode {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    background: rgba(128,128,128,0.18);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--vscode-editor-foreground);
   }
-  .apply-btn:hover { opacity: 0.85; }
+
+  /* ── Code block (fenced) ── */
+  .md-block {
+    margin: 6px 0 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid rgba(128,128,128,0.2);
+    font-size: 12px;
+  }
+  .md-block-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.3);
+    border-bottom: 1px solid rgba(128,128,128,0.15);
+  }
+  .md-lang {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10.5px;
+    color: var(--vscode-descriptionForeground);
+    text-transform: lowercase;
+    letter-spacing: 0.03em;
+  }
+  .md-block-btns { display: flex; gap: 5px; }
+  .md-copy-btn, .apply-btn {
+    padding: 2px 8px;
+    background: none;
+    border: 1px solid rgba(128,128,128,0.35);
+    border-radius: 3px;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    font-size: 10.5px;
+    transition: background 0.1s;
+  }
+  .md-copy-btn:hover, .apply-btn:hover { background: rgba(128,128,128,0.15); }
+  .apply-btn { color: #4ec9b0; border-color: rgba(78,201,176,0.4); }
+  .md-pre {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--vscode-terminal-background, #1e1e1e);
+    overflow-x: auto;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--vscode-terminal-foreground, #d4d4d4);
+  }
+  .md-pre code { display: block; white-space: pre; }
+
+  /* ── Tool card (file write, read, etc.) ── */
+  .tool-card {
+    border: 1px solid rgba(128,128,128,0.2);
+    border-left: 3px solid rgba(128,128,128,0.35);
+    border-radius: 5px;
+    overflow: hidden;
+    margin: 2px 0;
+  }
+  .tool-card-hdr {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.2);
+    font-size: 11.5px;
+  }
+  .tool-icon { font-size: 13px; flex-shrink: 0; }
+  .tool-label { font-weight: 600; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+  .tool-path {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    opacity: 0.75;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .tool-open-btn {
+    padding: 2px 8px;
+    background: none;
+    border: 1px solid rgba(128,128,128,0.35);
+    border-radius: 3px;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    font-size: 10.5px;
+    flex-shrink: 0;
+    transition: background 0.1s;
+  }
+  .tool-open-btn:hover { background: rgba(128,128,128,0.12); }
 
   /* ── Thinking indicator → transforms into token summary ── */
   .msg-thinking {
@@ -641,82 +757,106 @@ export class JarvisPanel {
   }
   #clear-attach:hover { color: var(--vscode-editor-foreground); }
 
-  /* ── Terminal command approval card ── */
+  /* ── Terminal command approval card (Claude Code–style permission UI) ── */
   .cmd-card {
-    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    border: 1px solid rgba(78,201,176,0.35);
+    border-left: 3px solid #4ec9b0;
     border-radius: 6px;
-    overflow: hidden;
-    background: var(--vscode-editor-inactiveSelectionBackground);
+    background: var(--vscode-editor-inactiveSelectionBackground, rgba(30,30,30,0.6));
     font-size: 12px;
+    margin: 2px 0;
   }
   .cmd-card-header {
-    padding: 5px 10px;
-    background: rgba(128,128,128,0.1);
-    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+    padding: 8px 12px 0 12px;
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--vscode-descriptionForeground);
+    gap: 7px;
+  }
+  .cmd-card-icon {
+    font-size: 13px;
+    flex-shrink: 0;
+    line-height: 1;
   }
   .cmd-card-label {
     font-weight: 600;
+    font-size: 11px;
     color: #4ec9b0;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
     flex-shrink: 0;
   }
-  .cmd-card-reason {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .cmd-card-body {
-    padding: 8px 10px;
+    padding: 6px 12px 10px 12px;
   }
   .cmd-card-code {
     display: block;
     font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--vscode-editor-foreground);
+    background: var(--vscode-terminal-background, rgba(0,0,0,0.3));
+    padding: 6px 10px;
+    border-radius: 4px;
     word-break: break-all;
+    margin-bottom: 6px;
+    border: 1px solid rgba(128,128,128,0.15);
+  }
+  .cmd-card-reason {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
     margin-bottom: 8px;
+    line-height: 1.4;
   }
   .cmd-card-actions {
     display: flex;
     gap: 6px;
+    align-items: center;
   }
   .cmd-run-btn {
-    padding: 3px 12px;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
+    padding: 4px 14px;
+    background: #4ec9b0;
+    color: #1e1e1e;
     border: none;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: opacity 0.1s;
   }
-  .cmd-run-btn:hover { background: var(--vscode-button-hoverBackground); }
+  .cmd-run-btn:hover { opacity: 0.85; }
+  .cmd-run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .cmd-skip-btn {
-    padding: 3px 10px;
+    padding: 4px 12px;
     background: none;
     color: var(--vscode-descriptionForeground);
-    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+    border: 1px solid rgba(128,128,128,0.4);
     border-radius: 4px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 11.5px;
+    transition: background 0.1s;
   }
-  .cmd-skip-btn:hover { background: rgba(128,128,128,0.1); }
+  .cmd-skip-btn:hover { background: rgba(128,128,128,0.12); }
   .cmd-kill-btn {
-    padding: 3px 10px;
+    padding: 4px 12px;
     background: none;
     color: #f48771;
-    border: 1px solid rgba(244,135,113,0.5);
+    border: 1px solid rgba(244,135,113,0.45);
     border-radius: 4px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 11.5px;
+    transition: background 0.1s;
   }
   .cmd-kill-btn:hover { background: rgba(244,135,113,0.1); }
   .cmd-kill-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .cmd-status {
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
   .cmd-output {
-    margin-top: 6px;
+    margin-top: 8px;
     padding: 6px 8px;
     background: var(--vscode-terminal-background, #1e1e1e);
     color: var(--vscode-terminal-foreground, #d4d4d4);
@@ -1004,25 +1144,153 @@ export class JarvisPanel {
     }
   }
 
+  // ── Markdown renderer (no external deps) ────────────────────────────────
+  function mdInline(raw) {
+    // 1. Extract inline code spans so they aren't processed further
+    // NOTE: all regex here use \\ (double-backslash) so the template literal
+    // produces a single \ in the HTML output, giving correct regex syntax.
+    const codes = [];
+    let s = raw.replace(/\x60([^\x60\\n]+)\x60/g, (_, c) => { codes.push(c); return '\x01' + (codes.length - 1) + '\x01'; });
+    // 2. Escape remaining HTML
+    s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 3. Inline transforms
+    s = s.replace(/\\*\\*\\*(.+?)\\*\\*\\*/g, '<strong><em>$1</em></strong>');
+    s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+    s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
+    s = s.replace(/\\[([^\\]]*)]\\([^)]*\\)/g, '<span class="md-link">$1</span>');
+    // 4. Restore code spans
+    s = s.replace(/\x01(\\d+)\x01/g, (_, i) => {
+      const c = codes[+i].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return '<code class="md-icode">' + c + '</code>';
+    });
+    return s;
+  }
+
+  function renderMarkdown(raw) {
+    const out = [];
+    const lines = raw.split('\\n');
+    let i = 0, listType = '';
+    const closeList = () => { if (listType) { out.push('</' + listType + '>'); listType = ''; } };
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Fenced code block
+      const fence = line.match(/^\x60\x60\x60(\\w*)\\s*$/);
+      if (fence) {
+        closeList();
+        const lang = fence[1] || '';
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !lines[i].match(/^\x60\x60\x60\\s*$/)) { codeLines.push(lines[i]); i++; }
+        i++; // skip closing fence
+        const codeRaw = codeLines.join('\\n');
+        const codeEsc = codeRaw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const dataCode = codeRaw.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+        out.push(
+          '<div class="md-block" data-code="' + dataCode + '">' +
+            '<div class="md-block-hdr">' +
+              '<span class="md-lang">' + (lang || 'code') + '</span>' +
+              '<div class="md-block-btns">' +
+                '<button class="md-copy-btn" onclick="mdCopy(this)">Copy</button>' +
+                '<button class="apply-btn" onclick="mdApply(this)">Apply to file</button>' +
+              '</div>' +
+            '</div>' +
+            '<pre class="md-pre"><code>' + codeEsc + '</code></pre>' +
+          '</div>'
+        );
+        continue;
+      }
+
+      // Headers
+      const hm = line.match(/^(#{1,3}) (.+)/);
+      if (hm) {
+        closeList();
+        const lvl = hm[1].length;
+        out.push('<h' + lvl + ' class="md-h">' + mdInline(hm[2]) + '</h' + lvl + '>');
+        i++; continue;
+      }
+
+      // Unordered list
+      const ulm = line.match(/^[-*+] (.+)/);
+      if (ulm) {
+        if (listType !== 'ul') { closeList(); out.push('<ul class="md-ul">'); listType = 'ul'; }
+        out.push('<li>' + mdInline(ulm[1]) + '</li>');
+        i++; continue;
+      }
+
+      // Ordered list
+      const olm = line.match(/^\\d+\\. (.+)/);
+      if (olm) {
+        if (listType !== 'ol') { closeList(); out.push('<ol class="md-ol">'); listType = 'ol'; }
+        out.push('<li>' + mdInline(olm[1]) + '</li>');
+        i++; continue;
+      }
+
+      closeList();
+
+      // Horizontal rule
+      if (line.match(/^---+\\s*$/)) { out.push('<div class="md-hr"></div>'); i++; continue; }
+
+      // Blank line
+      if (!line.trim()) { out.push('<div class="md-gap"></div>'); i++; continue; }
+
+      // Paragraph
+      out.push('<p class="md-p">' + mdInline(line) + '</p>');
+      i++;
+    }
+    closeList();
+    return out.join('');
+  }
+
+  // Copy code block content to clipboard
+  function mdCopy(btn) {
+    const block = btn.closest('.md-block');
+    const code = block.getAttribute('data-code')
+      .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+    navigator.clipboard.writeText(code).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {});
+  }
+
+  // Apply code block to active file
+  function mdApply(btn) {
+    const block = btn.closest('.md-block');
+    const code = block.getAttribute('data-code')
+      .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+    vscode.postMessage({ command: 'applyCode', code });
+  }
+
+  // ── File write tool card ──────────────────────────────────────────────────
+  function addFileCard(fullPath) {
+    const name = fullPath.replace(/\\\\/g, '/').split('/').pop() || fullPath;
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    card.innerHTML =
+      '<div class="tool-card-hdr">' +
+        '<span class="tool-icon">✎</span>' +
+        '<span class="tool-label">Wrote</span>' +
+        '<span class="tool-path">' + name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' +
+        '<button class="tool-open-btn">Open</button>' +
+      '</div>';
+    card.querySelector('.tool-open-btn').addEventListener('click', () => {
+      vscode.postMessage({ command: 'openFile', path: fullPath });
+    });
+    messages.appendChild(card);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   // ── Add message bubble ──
   function addMsg(text, cls) {
     const div = document.createElement('div');
     div.className = 'msg ' + cls;
-    div.textContent = text;
-
     if (cls === 'msg-jarvis') {
-      const codeMatch = text.match(/\`\`\`[\\w]*\\n([\\s\\S]+?)\\n\`\`\`/);
-      if (codeMatch) {
-        const code = codeMatch[1];
-        const btn = document.createElement('button');
-        btn.className = 'apply-btn';
-        btn.textContent = 'Apply to active file';
-        btn.onclick = () => vscode.postMessage({ command: 'applyCode', code });
-        div.appendChild(document.createElement('br'));
-        div.appendChild(btn);
-      }
+      div.innerHTML = renderMarkdown(text);
+    } else {
+      div.textContent = text;
     }
-
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
     return div;
@@ -1289,14 +1557,15 @@ export class JarvisPanel {
     div.id = id;
     div.innerHTML =
       '<div class="cmd-card-header">' +
-        '<span class="cmd-card-label">Run command?</span>' +
-        '<span class="cmd-card-reason">' + escHtml(cmd.reason || '') + '</span>' +
+        '<span class="cmd-card-icon">⬡</span>' +
+        '<span class="cmd-card-label">Run command</span>' +
       '</div>' +
       '<div class="cmd-card-body">' +
         '<code class="cmd-card-code">' + escHtml(cmd.command) + '</code>' +
+        (cmd.reason ? '<div class="cmd-card-reason">' + escHtml(cmd.reason) + '</div>' : '') +
         '<div class="cmd-card-actions">' +
-          '<button class="cmd-run-btn">Run</button>' +
-          '<button class="cmd-skip-btn">Skip</button>' +
+          '<button class="cmd-run-btn">Allow</button>' +
+          '<button class="cmd-skip-btn">Deny</button>' +
         '</div>' +
       '</div>';
 
@@ -1306,14 +1575,14 @@ export class JarvisPanel {
 
     runBtn.addEventListener('click', () => {
       runBtn.disabled = true;
-      runBtn.textContent = 'Running...';
+      runBtn.textContent = 'Running…';
       skipBtn.remove();
       const killBtn = document.createElement('button');
       killBtn.className = 'cmd-kill-btn';
       killBtn.textContent = 'Kill';
       killBtn.addEventListener('click', () => {
         killBtn.disabled = true;
-        killBtn.textContent = 'Killing...';
+        killBtn.textContent = 'Killing…';
         fetch('http://localhost:3131/kill-command', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1325,7 +1594,7 @@ export class JarvisPanel {
     });
 
     skipBtn.addEventListener('click', () => {
-      actionsDiv.innerHTML = '<span style="font-size:11px;opacity:0.5">Skipped</span>';
+      actionsDiv.innerHTML = '<span class="cmd-status" style="color:var(--vscode-descriptionForeground);opacity:0.55">— denied</span>';
     });
 
     messages.appendChild(div);
@@ -1342,14 +1611,24 @@ export class JarvisPanel {
       if (card) {
         const actions = card.querySelector('.cmd-card-actions');
         const killed = output && output.startsWith('Killed by user');
+        const icon  = success ? '✓' : killed ? '◼' : '✕';
         const label = success ? 'Done' : killed ? 'Killed' : 'Failed';
         const color = success ? '#4ec9b0' : killed ? '#ce9178' : '#f48771';
-        if (actions) actions.innerHTML = '<span style="font-size:11px;color:' + color + '">' + label + '</span>';
+        if (actions) {
+          actions.innerHTML =
+            '<span class="cmd-status" style="color:' + color + '">' +
+              '<span>' + icon + '</span>' +
+              '<span>' + label + '</span>' +
+            '</span>';
+        }
+        // Update left border color to reflect result
+        card.style.borderLeftColor = color;
         if (output) {
           const pre = document.createElement('div');
           pre.className = 'cmd-output ' + (success ? 'success' : 'failure');
           pre.textContent = output;
-          card.querySelector('.cmd-card-body').appendChild(pre);
+          const body = card.querySelector('.cmd-card-body');
+          if (body) body.appendChild(pre);
         }
         messages.scrollTop = messages.scrollHeight;
       }
@@ -1397,8 +1676,7 @@ export class JarvisPanel {
         if (nameEl) nameEl.textContent = sessionName;
       }
       if (filesWritten && filesWritten.length > 0) {
-        const names = filesWritten.map(p => p.replace(/\\\\/g, '/').split('/').pop()).join(', ');
-        addMsg('Wrote: ' + names, 'msg-system');
+        filesWritten.forEach(p => addFileCard(p));
       }
       if (commandsToRun && commandsToRun.length > 0) {
         commandsToRun.forEach(cmd => addCommandCard(cmd));
@@ -1410,6 +1688,7 @@ export class JarvisPanel {
       input.dispatchEvent(new Event('input'));
       input.focus();
     } else if (command === 'serverStatus') {
+      console.log('[Jarvis] serverStatus received:', text);
       dot.className = text === 'online' ? 'online' : 'offline';
     } else if (command === 'workspaceInfo') {
       const el = document.getElementById('workspace-name');
@@ -1418,6 +1697,7 @@ export class JarvisPanel {
   });
 
   // Check server on load
+  console.log('[Jarvis] webview script started, sending checkServer');
   vscode.postMessage({ command: 'checkServer' });
   setInterval(() => vscode.postMessage({ command: 'checkServer' }), 30000);
 </script>

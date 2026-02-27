@@ -13,6 +13,7 @@ let statusBar;
 let outputChannel;
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Jarvis Server');
+    (0, jarvisPanel_1.setOutputChannel)(outputChannel);
     // Status bar item — bottom right, always visible
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBar.command = 'jarvis.openPanel';

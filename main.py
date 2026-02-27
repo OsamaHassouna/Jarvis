@@ -32,16 +32,30 @@ def _extract_bash_blocks(text: str) -> list:
     return re.findall(r"```(?:bash|shell|sh|powershell|cmd)?\n(.*?)```", text, re.DOTALL)
 
 
+_JARVIS_SLASH_CMDS = ("/memory", "/rules", "/project", "/attach", "/sync")
+
+def _is_jarvis_command(line: str) -> bool:
+    """Return True if the line is a Jarvis internal slash command, not a shell command."""
+    stripped = line.strip()
+    return any(stripped.startswith(prefix) for prefix in _JARVIS_SLASH_CMDS)
+
+
 def _offer_to_run(response: str) -> None:
-    """If response contains runnable code blocks, offer to execute them."""
+    """If response contains real shell commands in code blocks, offer to execute them.
+    Skips Jarvis internal /commands — those must be typed directly into the prompt."""
     blocks = _extract_bash_blocks(response)
     if not blocks:
         return
-    runnable = [b.strip() for b in blocks if b.strip() and "\n" not in b.strip().splitlines()[0] or True]
-    if not runnable:
-        return
-    # Only prompt if there are short, single-command blocks (not multi-line scripts)
-    single_cmds = [b.strip() for b in runnable if len(b.strip().splitlines()) <= 3]
+    # Filter: only short blocks (≤3 lines) that are real shell commands
+    single_cmds = []
+    for block in blocks:
+        lines = [l for l in block.strip().splitlines() if l.strip()]
+        if not lines or len(lines) > 3:
+            continue
+        # Skip if any line is a Jarvis slash command
+        if any(_is_jarvis_command(l) for l in lines):
+            continue
+        single_cmds.append(block.strip())
     if not single_cmds:
         return
     try:
