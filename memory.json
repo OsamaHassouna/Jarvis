@@ -5,26 +5,7 @@
     "experience_level": "intermediate",
     "rules": []
   },
-  "projects": [
-    {
-      "name": "alpha",
-      "path": "D:/alpha",
-      "stack": [
-        "Angular"
-      ],
-      "tasks_completed": [],
-      "last_updated": "2026-02-01T10:00:00"
-    },
-    {
-      "name": "beta",
-      "path": "D:/beta",
-      "stack": [
-        ".NET"
-      ],
-      "tasks_completed": [],
-      "last_updated": "2026-02-02T10:00:00"
-    }
-  ],
+  "projects": [],
   "history": [
     {
       "role": "user",
