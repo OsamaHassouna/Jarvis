@@ -17,6 +17,7 @@ from tools.sessions import (
     get_active_session_id, set_active_session,
     get_project_summary_text, list_all_sessions, list_project_sessions,
     auto_name_from_first_message, generate_better_name,
+    _JARVIS_ROOT,
 )
 from memory import (
     get_context_summary, add_to_history, load_memory, save_memory, save_task_to_project,
@@ -899,15 +900,28 @@ def build_vscode_system_prompt(
         history_text = "\n\nRecent conversation history:\n"
         name = user["name"] or "User"
         for msg in recent:
-            role = name if msg["role"] == "user" else "Jarvis"
-            history_text += f"{role}: {msg['content'][:200]}\n"
+            r = msg["role"]
+            if r == "user":
+                role_label = name
+            elif r == "tool":
+                role_label = "[Tool]"
+            else:
+                role_label = "Jarvis"
+            history_text += f"{role_label}: {msg['content'][:300]}\n"
 
+    jarvis_root = _JARVIS_ROOT.replace("\\", "/")
     summary = f"""You are Jarvis, a personal AI assistant for {user['name'] or 'the user'}.
 User info: name={user['name'] or 'unknown'}, experience={user['experience_level']}
 Coding preferences: {prefs_text}{rules_section}{project_context_section}
 {history_text}
 Important: You have persistent memory. You remember past conversations.
 If the user asks what you discussed before, refer to the history above.
+
+Your local storage (do NOT invent other locations — this is the truth):
+- Memory file: {jarvis_root}/memory.json (user prefs, project knowledge, rules)
+- Session storage: {jarvis_root}/sessions/ (each project has separate sess_<id>.json files, one per conversation)
+- Each session is a separate JSON log — /history drawer shows them all. They are NOT merged or cloud-stored.
+- If asked about storage: be factual. Do not say "server-side" or "cloud" — everything is local JSON files.
 
 Interface features (tell the user about these when relevant):
 - Terminal: type "attach <filepath>" before a question to include a file as context
@@ -1265,6 +1279,23 @@ def process_for_vscode(
     if nat_mem_response is not None:
         return nat_mem_response
 
+    # Shortcut: trivial social messages need no Claude call (saves ~3k tokens + 19s)
+    _TRIVIAL_PHRASES = {
+        "thanks", "thank you", "thx", "ty",
+        "perfect", "great", "nice", "awesome", "cool", "got it",
+        "ok", "okay", "k", "yep", "yes", "nope", "no", "sure",
+        "perfect thanks", "sounds good", "you're welcome", "np", "no problem",
+    }
+    _msg_clean = message.lower().strip().rstrip(".,!? ")
+    if _msg_clean in _TRIVIAL_PHRASES:
+        import random as _random
+        return _random.choice([
+            "What do you want to work on?",
+            "What's next?",
+            "Ready when you are.",
+            "Go ahead.",
+        ])
+
     update_last_session()
     detect_and_save_preference(message)
 
@@ -1289,8 +1320,18 @@ def process_for_vscode(
         workspace_root, attachment_text, attachment_name
     )
 
-    # Instant keyword check — VS Code never spawns agents
-    if is_complex_task(message):
+    # Instant keyword check — VS Code never spawns agents.
+    # But skip the redirect if the message is clearly a question/informational request,
+    # even if it happens to contain a keyword like "multiple" or "system".
+    _QUESTION_STARTS = (
+        "what", "where", "when", "why", "who", "which", "how",
+        "show", "tell", "explain", "describe", "list", "give",
+        "can you", "could you", "do you", "is ", "are ", "does ",
+        "ok ", "okay ", "so ", "and ",
+    )
+    _lower_msg = message.lower().strip()
+    _is_question = any(_lower_msg.startswith(q) for q in _QUESTION_STARTS) or _lower_msg.endswith("?")
+    if not _is_question and is_complex_task(message):
         return (
             "This task needs agent execution. Open a terminal and run:\n\n"
             "  python main.py\n\n"

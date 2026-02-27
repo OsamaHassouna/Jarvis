@@ -22,7 +22,7 @@ from orchestrator import (
 from tools.sessions import (
     create_session, get_session, list_all_sessions,
     set_active_session, close_session,
-    get_active_session_id,
+    get_active_session_id, append_message as session_append_message,
 )
 from tools.token_tracker import tracker
 
@@ -190,9 +190,12 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         elif self.path == "/run-command":
             try:
                 body = self._read_body()
-                command    = body.get("command", "").strip()
-                working_dir = body.get("working_dir", "")
-                job_id      = body.get("job_id", "")
+                command      = body.get("command", "").strip()
+                working_dir  = body.get("working_dir", "")
+                job_id       = body.get("job_id", "")
+                session_id   = body.get("session_id", "")
+                workspace_root = body.get("workspace_root", "")
+                is_global    = bool(body.get("is_global", False))
                 if not command:
                     self._send_json(400, {"error": "command is required"})
                     return
@@ -200,6 +203,17 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 result = run_single_command(command, working_dir, job_id)
                 status = "OK" if result["success"] else "Failed"
                 print(f"   {status} (PID {result.get('pid', '?')}): {result['output'][:60]}")
+
+                # Record command result in session history so Jarvis knows it ran
+                if session_id:
+                    output_snippet = result["output"][:500] if result["output"] else "(no output)"
+                    status_word = "succeeded" if result["success"] else "FAILED"
+                    tool_msg = f"[Tool result] Command {status_word}: `{command}`\nOutput:\n{output_snippet}"
+                    try:
+                        session_append_message(session_id, workspace_root, is_global, "tool", tool_msg)
+                    except Exception:
+                        pass  # best-effort
+
                 self._send_json(200, result)
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})

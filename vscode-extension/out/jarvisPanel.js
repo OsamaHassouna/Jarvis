@@ -62,7 +62,7 @@ class JarvisPanel {
                 await this._applyCode(msg.code);
             }
             else if (msg.command === 'runCommand') {
-                await this._runCommand(msg.command_str, msg.working_dir, msg.card_id);
+                await this._runCommand(msg.command_str, msg.working_dir, msg.card_id, this._currentSessionId, this._currentIsGlobal);
             }
             else if (msg.command === 'newSession') {
                 await this._newSession(msg.isGlobal ?? false);
@@ -261,15 +261,24 @@ class JarvisPanel {
         vscode.window.showInformationMessage(`Jarvis applied code to ${editor.document.fileName.split(/[\\/]/).pop()}`);
     }
     // Run an approved terminal command via the server
-    async _runCommand(command_str, working_dir, card_id) {
+    async _runCommand(command_str, working_dir, card_id, sessionId = '', isGlobal = false) {
+        const workspaceRoot = this._getWorkspaceRoot();
         try {
             const res = await fetch(`${JARVIS_SERVER}/run-command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: command_str, working_dir, job_id: card_id }),
+                body: JSON.stringify({
+                    command: command_str, working_dir, job_id: card_id,
+                    session_id: sessionId, workspace_root: workspaceRoot, is_global: isGlobal,
+                }),
             });
             const data = await res.json();
             this._post('commandResult', '', { card_id, success: data.success, output: data.output });
+            // Auto-notify Jarvis for every command result so it can interpret and respond
+            const status = data.success ? 'succeeded' : 'FAILED';
+            const notify = `Command ${status}.\n\nCommand: \`${command_str}\`\nOutput:\n${data.output || '(no output)'}`;
+            this._post('startAutoChat', '', { success: data.success });
+            await this._handleSend(notify);
         }
         catch {
             this._post('commandResult', '', { card_id, success: false, output: 'Could not reach Jarvis server.' });
@@ -1658,6 +1667,14 @@ class JarvisPanel {
     } else if (command === 'workspaceInfo') {
       const el = document.getElementById('workspace-name');
       if (el) el.textContent = text ? '\u2014 ' + text : '';
+    } else if (command === 'startAutoChat') {
+      // Extension auto-notifying Jarvis of a command result
+      const succeeded = msg.success;
+      const label = succeeded ? 'Command done \u2014 getting Jarvis\u2019s take\u2026' : 'Command failed \u2014 notifying Jarvis\u2026';
+      addMsg(label, 'msg-system');
+      isSending = true;
+      sendBtn.disabled = true;
+      showTyping();
     }
   });
 
