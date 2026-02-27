@@ -9,6 +9,7 @@ import json
 import sys
 import threading
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs, unquote
 
 # Force UTF-8 stdout so emoji in Claude responses don't crash on Windows cp1252
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -16,8 +17,20 @@ from config import SERVER_PORT
 from orchestrator import (
     process_for_vscode, process_briefing,
     get_last_files_written, get_pending_commands, run_single_command, kill_command,
+    get_last_session_id, get_last_session_name,
+)
+from tools.sessions import (
+    create_session, get_session, list_all_sessions,
+    set_active_session, close_session,
+    get_active_session_id,
 )
 from tools.token_tracker import tracker
+
+
+class JarvisHTTPServer(ThreadingHTTPServer):
+    """Threading server with daemon threads so Ctrl+C never leaves the port occupied."""
+    daemon_threads     = True   # request threads die with the process → no port hold
+    allow_reuse_address = True  # fast restart without "Address already in use"
 
 
 class JarvisHTTPHandler(BaseHTTPRequestHandler):
@@ -36,6 +49,10 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length))
+
     def do_OPTIONS(self):
         """CORS preflight — required for VS Code webview fetch() calls."""
         self.send_response(204)
@@ -45,18 +62,49 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/status":
-            self._send_json(200, {"status": "running", "version": "phase7"})
-        elif self.path == "/briefing":
+        parsed = urlparse(self.path)
+        path   = parsed.path
+        qs     = parse_qs(parsed.query)
+
+        if path == "/status":
+            self._send_json(200, {"status": "running", "version": "phase10"})
+
+        elif path == "/briefing":
             self._send_json(200, {"briefing": process_briefing()})
+
+        elif path == "/sessions/list":
+            self._send_json(200, list_all_sessions())
+
+        elif path == "/sessions/active":
+            workspace_root = unquote(qs.get("workspace_root", [""])[0])
+            session_id = get_active_session_id(workspace_root, False)
+            if session_id:
+                sess = get_session(session_id, workspace_root, False)
+                self._send_json(200, {"session": sess})
+            else:
+                self._send_json(200, {"session": None})
+
+        elif path == "/sessions/load":
+            session_id     = unquote(qs.get("session_id", [""])[0])
+            workspace_root = unquote(qs.get("workspace_root", [""])[0])
+            is_global      = qs.get("is_global", ["0"])[0] == "1"
+            if not session_id:
+                self._send_json(400, {"error": "session_id is required"})
+                return
+            sess = get_session(session_id, workspace_root, is_global)
+            if sess is None:
+                self._send_json(404, {"error": "Session not found"})
+                return
+            set_active_session(session_id, workspace_root, is_global)
+            self._send_json(200, {"session": sess})
+
         else:
             self._send_json(404, {"error": "Not found"})
 
     def do_POST(self):
         if self.path == "/chat":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length))
+                body = self._read_body()
 
                 message = body.get("message", "").strip()
                 if not message:
@@ -74,10 +122,11 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     attachment_name=body.get("attachment_name", ""),
                     attachment_image_base64=body.get("attachment_image_base64", ""),
                     attachment_image_type=body.get("attachment_image_type", ""),
+                    session_id=body.get("session_id", ""),
+                    is_global=bool(body.get("is_global", False)),
                 )
                 print(f"   Jarvis: {response[:80]}...")
 
-                # Include token data so the VS Code panel can display it
                 last = tracker.get_last()
                 token_data = None
                 if last:
@@ -93,6 +142,8 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     "tokens": token_data,
                     "files_written": get_last_files_written(),
                     "commands_to_run": get_pending_commands(),
+                    "session_id": get_last_session_id(),
+                    "session_name": get_last_session_name(),
                 })
 
             except json.JSONDecodeError:
@@ -100,13 +151,48 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
 
+        elif self.path == "/sessions/new":
+            try:
+                body           = self._read_body()
+                workspace_root = body.get("workspace_root", "")
+                is_global      = bool(body.get("is_global", False))
+
+                # Close current active session first so it gets a summary
+                old_id = get_active_session_id(workspace_root, is_global)
+                if old_id:
+                    close_session(old_id, workspace_root, is_global)
+
+                sess = create_session(workspace_root, is_global)
+                set_active_session(sess["id"], workspace_root, is_global)
+                print(f"\n[VS Code] New session: {sess['id']}")
+                self._send_json(200, {"session": sess})
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/sessions/close":
+            try:
+                body           = self._read_body()
+                session_id     = body.get("session_id", "")
+                workspace_root = body.get("workspace_root", "")
+                is_global      = bool(body.get("is_global", False))
+                if not session_id:
+                    self._send_json(400, {"error": "session_id is required"})
+                    return
+                summary = close_session(session_id, workspace_root, is_global)
+                self._send_json(200, {"summary": summary})
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
         elif self.path == "/run-command":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length))
-                command = body.get("command", "").strip()
+                body = self._read_body()
+                command    = body.get("command", "").strip()
                 working_dir = body.get("working_dir", "")
-                job_id = body.get("job_id", "")
+                job_id      = body.get("job_id", "")
                 if not command:
                     self._send_json(400, {"error": "command is required"})
                     return
@@ -122,8 +208,7 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/kill-command":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length))
+                body   = self._read_body()
                 job_id = body.get("job_id", "").strip()
                 if not job_id:
                     self._send_json(400, {"error": "job_id is required"})
@@ -147,7 +232,7 @@ def start_server(port: int = None, block: bool = True) -> HTTPServer:
     block=False → returns server instance (for tests / programmatic use)
     """
     port = port or SERVER_PORT
-    server = ThreadingHTTPServer(("localhost", port), JarvisHTTPHandler)
+    server = JarvisHTTPServer(("localhost", port), JarvisHTTPHandler)
     print(f"\nJarvis server running on http://localhost:{port}")
     print("   Connect from VS Code (Ctrl+Shift+J) to open the panel.")
     print("   Press Ctrl+C to stop.\n")

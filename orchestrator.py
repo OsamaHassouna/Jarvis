@@ -10,6 +10,14 @@ import os
 import re
 import sys
 from config import ANTHROPIC_API_KEY, MODEL_SONNET, MODEL_OPUS, MAX_TOKENS
+from tools.sessions import (
+    create_session, get_session,
+    append_message as session_append_message,
+    update_session_name, close_session as close_session_fn,
+    get_active_session_id, set_active_session,
+    get_project_summary_text, list_all_sessions, list_project_sessions,
+    auto_name_from_first_message, generate_better_name,
+)
 from memory import (
     get_context_summary, add_to_history, load_memory, save_memory, save_task_to_project,
     update_last_session, get_daily_briefing, get_all_projects_summary, learn_preference,
@@ -92,6 +100,19 @@ def is_complex_task(user_input: str) -> bool:
     lower_input = user_input.lower()
     return any(keyword in lower_input for keyword in OPUS_KEYWORDS)
 
+def _strip_tool_xml(text: str) -> str:
+    """
+    Strip leaked tool-call XML from terminal-mode responses.
+    Terminal mode defines no tools, but the model can occasionally leak
+    <function_calls>, <tool_call>, or <invoke> blocks in its text output.
+    """
+    text = re.sub(r'<function_calls>.*?</function_calls>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<tool_response>.*?</tool_response>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<invoke\b[^>]*>.*?</invoke>', '', text, flags=re.DOTALL)
+    return text.strip()
+
+
 def handle_simple_task(user_input: str, history: list, model: str) -> str:
     """Handle a simple task directly with the selected model."""
     from tools.token_tracker import tracker
@@ -114,7 +135,7 @@ def handle_simple_task(user_input: str, history: list, model: str) -> str:
         output_tokens=response.usage.output_tokens
     )
 
-    return response.content[0].text
+    return _strip_tool_xml(response.content[0].text)
 
 def breakdown_into_agents(user_input: str, model: str) -> tuple:
     """
@@ -716,6 +737,208 @@ def handle_memory_command(message: str) -> str | None:
     return "Unknown /memory command. Use '/memory' to see available options."
 
 
+def _natural_memory_delete(message: str) -> str | None:
+    """
+    Detect natural language delete requests and dispatch to delete_project().
+    Matches:
+      - "delete X from memory", "forget project X", "remove alpha and beta"
+      - "remove them both permanently", "delete those", "forget them" (pronoun → lists projects)
+    Returns response string if matched, None otherwise.
+    """
+    lower = message.lower()
+    delete_intent = re.search(r'\b(delete|remove|forget|clear|erase)\b', lower)
+    if not delete_intent:
+        return None
+
+    # Must also mention memory/project context OR use a pronoun ("them", "those", "both")
+    memory_target = re.search(r'\b(memory|project|from (your|my|jarvis)|them|those|both|it)\b', lower)
+    if not memory_target:
+        return None
+
+    # "delete all projects" / "clear all projects from memory" / "remove them all"
+    if re.search(r'\b(all projects?|all of (them|the projects?)|them all)\b', lower):
+        count = delete_all_projects()
+        return f"Cleared all {count} project(s) from memory."
+
+    # Pronoun reference: "remove them both", "delete those", "forget them permanently"
+    # → list current projects so user can pick
+    if re.search(r'\b(them|those|both|it)\b', lower) and not re.search(r'\b[a-z]{3,}[-_][a-z]+\b', lower):
+        mem_data = load_memory()
+        projects = mem_data.get("projects", [])
+        if not projects:
+            return "No projects in memory to delete."
+        names = [p["name"] for p in projects]
+        lines = ["Which project(s) do you want to delete?"]
+        for n in names:
+            lines.append(f"  /memory delete {n}")
+        lines.append("  /memory clear projects  ← delete all at once")
+        return "\n".join(lines)
+
+    # Named project: "delete alpha from memory", "forget the alpha project", "remove alpha and beta"
+    _skip = {"the", "my", "your", "all", "this", "that", "them", "those", "both", "permanently",
+             "project", "projects", "from", "memory", "jarvis", "tests", "only", "as", "they",
+             "were", "for", "just", "tell", "me", "can", "you"}
+    patterns = [
+        r'(?:delete|remove|forget|erase)\s+(?:the\s+)?["\']?([a-zA-Z0-9_\-\.]+)["\']?\s+(?:from|project)',
+        r'(?:forget|remove|delete|erase)\s+(?:project\s+)?["\']?([a-zA-Z0-9_\-\.]+)["\']?',
+    ]
+    for pat in patterns:
+        m = re.search(pat, lower)
+        if m:
+            name = m.group(1).strip()
+            if name in _skip or len(name) < 2:
+                continue
+            removed = delete_project(name)
+            if removed:
+                return f"Deleted project '{removed}' from memory."
+            mem_data = load_memory()
+            candidates = [p["name"] for p in mem_data["projects"] if name in p["name"].lower()]
+            if candidates:
+                return (f"No exact match for '{name}'. Did you mean:\n"
+                        + "\n".join(f"  /memory delete {c}" for c in candidates))
+            return f"No project matching '{name}' found. Use '/memory projects' to see the list."
+
+    return None
+
+
+# ── VS Code session tracking ──────────────────────────────────────────────────
+
+_last_session_id: str = ""
+_last_session_name: str = ""
+
+
+def get_last_session_id() -> str:
+    """Return the session_id used in the last process_for_vscode call."""
+    return _last_session_id
+
+
+def get_last_session_name() -> str:
+    """Return the session name after the last process_for_vscode call."""
+    return _last_session_name
+
+
+def build_vscode_system_prompt(
+    workspace_root: str,
+    is_global: bool,
+    session_messages: list,
+) -> str:
+    """
+    Build the system prompt for a VS Code session request.
+    Replaces get_context_summary() for the VS Code path.
+    Injects session-specific history instead of global history.
+    """
+    memory = load_memory()
+    user = memory["user"]
+
+    prefs = user.get("preferences", {})
+    if isinstance(prefs, dict) and prefs:
+        prefs_text = ", ".join(f"{k}: {v}" for k, v in prefs.items())
+    elif isinstance(prefs, list) and prefs:
+        prefs_text = ", ".join(prefs)
+    else:
+        prefs_text = "none set yet"
+
+    rules = user.get("rules", [])
+    rules_section = ""
+    if rules:
+        rules_section = "\nUser-defined rules (always follow these):\n" + "\n".join(f"- {r}" for r in rules)
+
+    # Project context injection
+    project_context_section = ""
+    if not is_global and workspace_root:
+        project_summary = get_project_summary_text(workspace_root)
+        if project_summary:
+            project_context_section = f"\nProject context:\n{project_summary}"
+        else:
+            # No cumulative summary yet (no sessions explicitly closed).
+            # Inject brief hints from the 3 most recent past sessions so Jarvis
+            # isn't completely blind to previous work in this project.
+            past_sessions = list_project_sessions(workspace_root)
+            past_lines = []
+            for ps in past_sessions[:4]:
+                msgs = ps.get("messages", [])
+                if not msgs:
+                    continue
+                label = ps.get("name", "").strip()
+                if not label:
+                    first_user = next(
+                        (m["content"][:80] for m in msgs if m["role"] == "user"), ""
+                    )
+                    label = first_user.strip()
+                if label:
+                    date = ps.get("updated_at", "")[:10]
+                    past_lines.append(f"- {date}: {label}")
+            if past_lines:
+                project_context_section = (
+                    "\nRecent sessions for this project (start new session with + to build full summary):\n"
+                    + "\n".join(past_lines[:3])
+                )
+    elif is_global:
+        # Global session: include brief summaries of up to 3 recent projects
+        all_sessions = list_all_sessions()
+        project_entries = list(all_sessions.get("projects", {}).values())[:3]
+        if project_entries:
+            lines = []
+            for entry in project_entries:
+                pname = entry.get("project_name", "Unknown")
+                # Try to load summary for this project
+                sessions = entry.get("sessions", [])
+                if sessions:
+                    workspace = sessions[0].get("workspace_root", "")
+                    if workspace:
+                        summary_text = get_project_summary_text(workspace)
+                        if summary_text:
+                            lines.append(f"- {pname}: {summary_text[:200]}")
+            if lines:
+                project_context_section = "\nKnown projects (summaries for cross-project questions):\n" + "\n".join(lines)
+
+    # Recent session messages (last 20)
+    history_text = ""
+    if session_messages:
+        recent = session_messages[-20:]
+        history_text = "\n\nRecent conversation history:\n"
+        name = user["name"] or "User"
+        for msg in recent:
+            role = name if msg["role"] == "user" else "Jarvis"
+            history_text += f"{role}: {msg['content'][:200]}\n"
+
+    summary = f"""You are Jarvis, a personal AI assistant for {user['name'] or 'the user'}.
+User info: name={user['name'] or 'unknown'}, experience={user['experience_level']}
+Coding preferences: {prefs_text}{rules_section}{project_context_section}
+{history_text}
+Important: You have persistent memory. You remember past conversations.
+If the user asks what you discussed before, refer to the history above.
+
+Interface features (tell the user about these when relevant):
+- Terminal: type "attach <filepath>" before a question to include a file as context
+- VS Code: use the + button (next to the input) to attach files or images; images go to Vision API
+- VS Code: code responses show an "Apply to active file" button to write the code directly
+- VS Code: Jarvis automatically sees the active file and workspace folder as context
+- Commands (work in both terminal and VS Code chat):
+    /rules                     — list, add, remove global rules
+    /project rules             — list, add, remove rules for the current project only
+    /memory                    — show full memory summary (projects, preferences, history count)
+    /memory projects           — list all projects stored in memory
+    /memory delete <name>      — permanently delete a project from memory by name
+    /memory clear projects     — delete ALL projects from memory at once
+    /memory clear history      — clear conversation history
+    /memory preferences        — list saved preferences
+
+Behavior rules:
+- Be concise and direct. Answer only what was asked.
+- Never mention server status, connection info, or whether you are online — the user already knows.
+- Greet only once per session. Do not re-greet on every message.
+- No filler phrases like "Great question!" or "Sure thing!"
+- You CAN manage memory. If the user asks to delete, forget, or clear a project, tell them '/memory delete <name>'. Never say you can't manage memory — the /memory commands handle everything. Never spawn agents to delete from memory.
+- You CAN run terminal commands. Use the run_terminal_command tool for any CLI operation the user asks for: ng generate, npm install, dotnet build, dotnet run, git commands, etc.
+- ALWAYS call run_terminal_command in the same response when the user asks you to run, re-run, modify, or adjust a command. Do not say "I've queued it" or "I'll run it" — just call the tool immediately.
+- If the user says "add --o", "run it with --port 4201", "run it again", or any variation → call run_terminal_command with the updated/repeated command right now, in this response.
+- If the user says "approve" in chat, explain: "Click the Run button in the command card above — typing 'approve' in chat doesn't execute anything."
+- Never describe a command you intend to queue without actually calling the tool in the same message."""
+
+    return summary.strip()
+
+
 # ── VS Code file tools (read_file / write_file) ───────────────────────────────
 
 # Tracks files written during the current VS Code request (reset each call)
@@ -1018,13 +1241,18 @@ def process_for_vscode(
     attachment_name: str = "",
     attachment_image_base64: str = "",
     attachment_image_type: str = "",
+    session_id: str = "",
+    is_global: bool = False,
 ) -> str:
     """
-    Phase 4/7/8 — Process a message from the VS Code panel.
+    Phase 4/7/8/10 — Process a message from the VS Code panel.
     Supports text file attachments and image attachments (Claude Vision).
     Uses instant keyword check to redirect complex tasks to the terminal.
     Phase 8: /rules and /project rules commands are intercepted before Claude.
+    Phase 10: Per-session message history and project summary injection.
     """
+    global _last_session_id
+
     # Intercept /rules and /memory commands — no Claude call needed
     rules_response = handle_rules_command(message, workspace_root)
     if rules_response is not None:
@@ -1032,9 +1260,28 @@ def process_for_vscode(
     mem_response = handle_memory_command(message)
     if mem_response is not None:
         return mem_response
+    nat_mem_response = _natural_memory_delete(message)
+    if nat_mem_response is not None:
+        return nat_mem_response
 
     update_last_session()
     detect_and_save_preference(message)
+
+    # ── Session resolution ────────────────────────────────────────────────────
+    if not session_id:
+        session_id = get_active_session_id(workspace_root, is_global)
+    if not session_id:
+        sess = create_session(workspace_root, is_global)
+        session_id = sess["id"]
+        set_active_session(session_id, workspace_root, is_global)
+    else:
+        sess = get_session(session_id, workspace_root, is_global)
+        if sess is None:   # file deleted externally
+            sess = create_session(workspace_root, is_global)
+            session_id = sess["id"]
+            set_active_session(session_id, workspace_root, is_global)
+    _last_session_id = session_id
+    session_msgs = (sess or {}).get("messages", [])
 
     augmented = build_message_with_file_context(
         message, file_path, file_content, selection,
@@ -1053,7 +1300,7 @@ def process_for_vscode(
     _vscode_files_written = []      # reset for this request
     _vscode_pending_commands = []   # reset for this request
 
-    context = get_context_summary()
+    context = build_vscode_system_prompt(workspace_root, is_global, session_msgs)
 
     # Build user content — multimodal if image attached, plain string otherwise
     if attachment_image_base64:
@@ -1119,8 +1366,27 @@ def process_for_vscode(
         output_tokens=total_output,
     )
 
-    add_to_history("user", message)
-    add_to_history("assistant", final_text)
+    # ── Persist to session ────────────────────────────────────────────────────
+    session_append_message(session_id, workspace_root, is_global, "user", message, 0)
+    session_append_message(session_id, workspace_root, is_global, "assistant", final_text,
+                           total_input + total_output)
+
+    # Auto-name: quick name after 1st exchange, better Haiku name after 3rd
+    updated_sess = get_session(session_id, workspace_root, is_global)
+    msg_count = len((updated_sess or {}).get("messages", []))
+    current_name = (updated_sess or {}).get("name", "")
+    if msg_count == 2:
+        new_name = auto_name_from_first_message(message)
+        update_session_name(session_id, workspace_root, is_global, new_name)
+        current_name = new_name[:80]
+    elif msg_count == 6:
+        better = generate_better_name((updated_sess or {}).get("messages", []))
+        if better:
+            update_session_name(session_id, workspace_root, is_global, better)
+            current_name = better[:80]
+    global _last_session_name
+    _last_session_name = current_name
+
     return final_text
 
 

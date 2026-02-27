@@ -21,8 +21,10 @@ GIST_ID      = os.getenv("GIST_ID", "")
 # Models
 # Sonnet for everyday tasks — fast and cost efficient
 # Opus for complex tasks — best reasoning and quality
+# Haiku for cheap classification / summarisation tasks
 MODEL_SONNET = "claude-sonnet-4-6"
-MODEL_OPUS = "claude-opus-4-6"
+MODEL_OPUS   = "claude-opus-4-6"
+MODEL_HAIKU  = "claude-haiku-4-5-20251001"
 
 # Max tokens per response
 MAX_TOKENS = 4096

@@ -3,9 +3,11 @@
 # Run this file to start a session: python main.py
 
 import os
+import re
+import subprocess
 import threading
 import time
-from orchestrator import process, process_briefing, handle_rules_command, handle_memory_command
+from orchestrator import process, process_briefing, handle_rules_command, handle_memory_command, _natural_memory_delete
 from memory import load_memory, update_memory
 from tools.token_tracker import tracker
 
@@ -24,6 +26,48 @@ def _thinking_timer(stop_event: threading.Event) -> None:
         time.sleep(0.5)
     # Clear the timer line
     print(f"\r{' ' * 35}\r", end="", flush=True)
+
+def _extract_bash_blocks(text: str) -> list:
+    """Extract commands from ```bash / ``` or ``` / ``` blocks in a response."""
+    return re.findall(r"```(?:bash|shell|sh|powershell|cmd)?\n(.*?)```", text, re.DOTALL)
+
+
+def _offer_to_run(response: str) -> None:
+    """If response contains runnable code blocks, offer to execute them."""
+    blocks = _extract_bash_blocks(response)
+    if not blocks:
+        return
+    runnable = [b.strip() for b in blocks if b.strip() and "\n" not in b.strip().splitlines()[0] or True]
+    if not runnable:
+        return
+    # Only prompt if there are short, single-command blocks (not multi-line scripts)
+    single_cmds = [b.strip() for b in runnable if len(b.strip().splitlines()) <= 3]
+    if not single_cmds:
+        return
+    try:
+        print(f"  Run command? [y/N]: ", end="", flush=True)
+        answer = input("").strip().lower()
+        if answer in ("y", "yes"):
+            for cmd in single_cmds:
+                print(f"  > {cmd}")
+                result = subprocess.run(cmd, shell=True, text=True, capture_output=False)
+                if result.returncode != 0:
+                    print(f"  (exited with code {result.returncode})")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _sync_on_exit():
+    """Push memory to GitHub Gist on clean session exit (backup)."""
+    try:
+        from config import GITHUB_TOKEN, GIST_ID, MEMORY_FILE
+        if GITHUB_TOKEN and GIST_ID:
+            from tools.sync import push_memory
+            push_memory(MEMORY_FILE, GITHUB_TOKEN, GIST_ID)
+            print("  (memory synced to Gist)")
+    except Exception:
+        pass  # Never crash on exit
+
 
 def setup_user():
     """First time setup — ask for user's name."""
@@ -78,6 +122,11 @@ def main():
                     print(f"\nJarvis: {mem_response}\n")
                     print("-" * 50)
                     continue
+            nat_mem = _natural_memory_delete(user_input)
+            if nat_mem is not None:
+                print(f"\nJarvis: {nat_mem}\n")
+                print("-" * 50)
+                continue
 
             # /attach — attach a file to the next message
             # Supports:  /attach            → prompts for path
@@ -100,9 +149,9 @@ def main():
                 continue
 
             if user_input.lower() in ["exit", "quit", "bye"]:
-                # Print token summary before exiting
                 tracker.print_summary()
-                print("\nJarvis: Goodbye! See you next time. 👋")
+                _sync_on_exit()
+                print("\nJarvis: Goodbye. See you next time.")
                 break
 
             # Inject any pending file attachment into the message
@@ -126,6 +175,9 @@ def main():
                 t.join(timeout=1)
             print(f"Jarvis: {response}\n")
 
+            # Offer to run any shell commands Jarvis suggested
+            _offer_to_run(response)
+
             # Show token usage after every task then reset for next
             tracker.print_summary()
             tracker.reset()
@@ -139,7 +191,8 @@ def main():
         except KeyboardInterrupt:
             # Print token summary on forced exit too
             tracker.print_summary()
-            print("\n\nJarvis: Session interrupted. Goodbye! 👋")
+            _sync_on_exit()
+            print("\n\nJarvis: Session ended. Goodbye.")
             break
         except Exception as e:
             print(f"\n⚠️ Error: {e}\n")

@@ -1,7 +1,7 @@
 "use strict";
 // jarvisPanel.ts
-// Phase 4/7 — VS Code Webview panel with Jarvis chat UI.
-// Phase 7 adds: file/image attachment, apply-code-to-file button.
+// Phase 4/7/8/10 — VS Code Webview panel with Jarvis chat UI.
+// Phase 10 adds: per-session persistence, session history drawer, new session button.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.JarvisPanel = void 0;
 const vscode = require("vscode");
@@ -29,10 +29,14 @@ class JarvisPanel {
         });
     }
     // ── Constructor ──────────────────────────────────────────────────────────
-    constructor(panel, extensionUri) {
+    constructor(panel, _extensionUri) {
         this._disposables = [];
         // Tracks the last real text editor even while the webview has focus
         this._lastKnownEditor = vscode.window.activeTextEditor;
+        // Phase 10: session tracking
+        this._currentSessionId = '';
+        this._currentIsGlobal = false;
+        this._sessionRestored = false;
         this._panel = panel;
         this._panel.webview.html = this._getHtml();
         // Keep _lastKnownEditor updated — activeTextEditor becomes undefined when webview gets focus
@@ -55,22 +59,38 @@ class JarvisPanel {
             else if (msg.command === 'runCommand') {
                 await this._runCommand(msg.command_str, msg.working_dir, msg.card_id);
             }
+            else if (msg.command === 'newSession') {
+                await this._newSession(msg.isGlobal ?? false);
+            }
+            else if (msg.command === 'openSessionDrawer') {
+                await this._loadAllSessions();
+            }
+            else if (msg.command === 'loadSession') {
+                await this._loadSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+            }
         }, null, this._disposables);
         // Clean up on close
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     }
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    _getWorkspaceRoot() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
+        if (folder) {
+            return folder.uri.fsPath;
+        }
+        if (editor && editor.document.uri.scheme === 'file') {
+            return path.dirname(editor.document.uri.fsPath);
+        }
+        return '';
+    }
     // ── Message handling ─────────────────────────────────────────────────────
     async _handleSend(message, attachment) {
-        // Use _lastKnownEditor so we keep context even when the webview has focus
         const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
         const fileContent = editor?.document.getText() ?? '';
         const filePath = editor?.document.fileName ?? '';
         const selection = editor?.document.getText(editor?.selection ?? new vscode.Selection(0, 0, 0, 0)) ?? '';
-        // Workspace root — prefer open folder, fall back to active file's parent directory
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-            ?? (editor && editor.document.uri.scheme === 'file'
-                ? path.dirname(editor.document.uri.fsPath)
-                : '');
+        const workspaceRoot = this._getWorkspaceRoot();
         this._postWorkspaceInfo();
         try {
             const res = await fetch(`${JARVIS_SERVER}/chat`, {
@@ -87,6 +107,9 @@ class JarvisPanel {
                     attachment_text: (attachment && !attachment.isImage ? attachment.contentText : '') ?? '',
                     attachment_image_base64: (attachment?.isImage ? attachment.base64 : '') ?? '',
                     attachment_image_type: (attachment?.isImage ? attachment.mimeType : '') ?? '',
+                    // Phase 10: session fields
+                    session_id: this._currentSessionId,
+                    is_global: this._currentIsGlobal,
                 })
             });
             if (!res.ok) {
@@ -95,12 +118,16 @@ class JarvisPanel {
                 return;
             }
             const data = await res.json();
+            if (data.session_id) {
+                this._currentSessionId = data.session_id;
+            }
             const filesWritten = data.files_written ?? [];
             const commandsToRun = data.commands_to_run ?? [];
             this._post('response', data.response, {
                 ...(data.tokens ? { tokens: data.tokens } : {}),
                 ...(filesWritten.length > 0 ? { filesWritten } : {}),
                 ...(commandsToRun.length > 0 ? { commandsToRun } : {}),
+                ...(data.session_name !== undefined ? { sessionName: data.session_name } : {}),
             });
         }
         catch {
@@ -113,7 +140,12 @@ class JarvisPanel {
         try {
             const res = await fetch(`${JARVIS_SERVER}/status`);
             const data = await res.json();
-            this._post('serverStatus', data.status === 'running' ? 'online' : 'offline');
+            const isOnline = data.status === 'running';
+            this._post('serverStatus', isOnline ? 'online' : 'offline');
+            if (isOnline && !this._sessionRestored) {
+                this._sessionRestored = true;
+                await this._restoreActiveSession();
+            }
         }
         catch {
             this._post('serverStatus', 'offline');
@@ -132,9 +164,75 @@ class JarvisPanel {
         }
         this._post('workspaceInfo', name);
     }
+    async _restoreActiveSession() {
+        try {
+            const workspaceRoot = this._getWorkspaceRoot();
+            const res = await fetch(`${JARVIS_SERVER}/sessions/active?workspace_root=${encodeURIComponent(workspaceRoot)}`);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            if (data.session) {
+                this._currentSessionId = data.session['id'];
+                this._currentIsGlobal = data.session['is_global'] ?? false;
+                this._post('loadSessionMessages', '', { session: data.session });
+            }
+        }
+        catch {
+            // best-effort
+        }
+    }
+    async _newSession(isGlobal) {
+        const workspaceRoot = this._getWorkspaceRoot();
+        try {
+            const res = await fetch(`${JARVIS_SERVER}/sessions/new`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspace_root: workspaceRoot, is_global: isGlobal }),
+            });
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            this._currentSessionId = data.session['id'];
+            this._currentIsGlobal = isGlobal;
+            this._post('sessionCreated', '', { session: data.session });
+        }
+        catch {
+            // best-effort
+        }
+    }
+    async _loadSession(sessionId, workspaceRoot, isGlobal) {
+        try {
+            const url = `${JARVIS_SERVER}/sessions/load?session_id=${encodeURIComponent(sessionId)}&workspace_root=${encodeURIComponent(workspaceRoot)}&is_global=${isGlobal ? '1' : '0'}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            this._currentSessionId = sessionId;
+            this._currentIsGlobal = isGlobal;
+            this._post('loadSessionMessages', '', { session: data.session });
+        }
+        catch {
+            // best-effort
+        }
+    }
+    async _loadAllSessions() {
+        try {
+            const res = await fetch(`${JARVIS_SERVER}/sessions/list`);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            this._post('sessionsListLoaded', '', { sessionsData: data });
+        }
+        catch {
+            // best-effort
+        }
+    }
     // Phase 7: Apply a code block to the active editor file
     async _applyCode(code) {
-        // _lastKnownEditor stays set even when the webview panel has focus
         const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showWarningMessage('Jarvis: No active file to apply code to. Click a file tab first.');
@@ -219,6 +317,163 @@ class JarvisPanel {
   }
   #status-dot.online  { background: #4ec9b0; }
   #status-dot.offline { background: #f48771; }
+
+  #workspace-name {
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 90px;
+  }
+
+  #session-name {
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 110px;
+    color: #4ec9b0;
+  }
+
+  #header-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+
+  #session-tokens {
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.6;
+    font-family: var(--vscode-editor-font-family, monospace);
+    white-space: nowrap;
+    margin-right: 3px;
+  }
+
+  .hdr-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground);
+    font-size: 15px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    width: 22px;
+    height: 20px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background 0.1s, color 0.1s;
+    padding: 0;
+  }
+  .hdr-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
+    color: var(--vscode-editor-foreground);
+  }
+
+  /* ── Session history drawer ── */
+  #session-drawer {
+    display: none;
+    flex-direction: column;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-sideBar-background);
+    flex-shrink: 0;
+  }
+  #session-drawer.open { display: flex; }
+
+  #session-drawer-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--vscode-descriptionForeground);
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+    flex-shrink: 0;
+  }
+  #session-drawer-header label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    cursor: pointer;
+    margin-left: auto;
+    font-size: 11px;
+  }
+  #drawer-new-btn, #drawer-close-btn {
+    background: none;
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+    border-radius: 4px;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 1px 7px;
+    height: 20px;
+    line-height: 1;
+  }
+  #drawer-new-btn:hover, #drawer-close-btn:hover {
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
+  }
+  #session-list-container {
+    max-height: 230px;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .session-group-label {
+    padding: 5px 12px 2px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.55;
+    font-weight: 600;
+  }
+  .session-item {
+    padding: 5px 12px 5px 14px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .session-item:hover { background: var(--vscode-list-hoverBackground); }
+  .session-item.active {
+    border-left-color: #4ec9b0;
+    background: rgba(78,201,176,0.08);
+  }
+  .session-item-name {
+    font-size: 12px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-item-time {
+    font-size: 10px;
+    opacity: 0.45;
+  }
 
   /* ── Messages ── */
   #messages {
@@ -315,31 +570,6 @@ class JarvisPanel {
     color: #4ec9b0;
     font-size: 8px;
     flex-shrink: 0;
-  }
-
-  /* ── Workspace name (in header) ── */
-  #workspace-name {
-    font-size: 10px;
-    font-weight: normal;
-    letter-spacing: 0;
-    text-transform: none;
-    opacity: 0.5;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 130px;
-  }
-
-  /* ── Session counter (in header) ── */
-  #session-tokens {
-    margin-left: auto;
-    font-size: 10px;
-    font-weight: normal;
-    letter-spacing: 0;
-    text-transform: none;
-    opacity: 0.6;
-    font-family: var(--vscode-editor-font-family, monospace);
-    white-space: nowrap;
   }
 
   /* ── Attachment chip ── */
@@ -599,7 +829,23 @@ class JarvisPanel {
   <div id="status-dot"></div>
   <span>Jarvis</span>
   <span id="workspace-name"></span>
-  <span id="session-tokens"></span>
+  <span id="session-name"></span>
+  <div id="header-right">
+    <span id="session-tokens"></span>
+    <button class="hdr-btn" id="new-session-btn" title="New session">+</button>
+    <button class="hdr-btn" id="history-btn" title="Session history">&#x2630;</button>
+  </div>
+</div>
+
+<!-- Session history drawer (hidden until history button clicked) -->
+<div id="session-drawer">
+  <div id="session-drawer-header">
+    <span>History</span>
+    <label><input type="checkbox" id="new-global-check"> Global</label>
+    <button id="drawer-new-btn">New</button>
+    <button id="drawer-close-btn">&#x2715;</button>
+  </div>
+  <div id="session-list-container"></div>
 </div>
 
 <div id="messages">
@@ -681,12 +927,20 @@ class JarvisPanel {
   const attachBar   = document.getElementById('attachment-bar');
   const attachChip  = document.getElementById('attachment-chip');
   const clearAttach = document.getElementById('clear-attach');
+  const drawer      = document.getElementById('session-drawer');
+  const drawerList  = document.getElementById('session-list-container');
+  const newSessBtn  = document.getElementById('new-session-btn');
+  const histBtn     = document.getElementById('history-btn');
+  const drawerClose = document.getElementById('drawer-close-btn');
+  const drawerNew   = document.getElementById('drawer-new-btn');
+  const globalCheck = document.getElementById('new-global-check');
 
   let pendingAttachment = null;
   let isSending = false;
   let timerInterval = null;
   let sessionTotalTokens = 0;
   let sessionTotalCost = 0;
+  let currentSessionId = '';
 
   // ── Auto-resize textarea + toggle send button ──
   input.addEventListener('input', () => {
@@ -697,7 +951,7 @@ class JarvisPanel {
 
   // ── Format model ID → short name ──
   function formatModel(modelId) {
-    const m = (modelId || '').match(/claude-(\w+)-(\d+)-(\d+)/);
+    const m = (modelId || '').match(/claude-(\\w+)-(\\d+)-(\\d+)/);
     if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' ' + m[2] + '.' + m[3];
     return modelId || 'Sonnet';
   }
@@ -709,7 +963,7 @@ class JarvisPanel {
       const cost = sessionTotalCost >= 0.01
         ? '$' + sessionTotalCost.toFixed(2)
         : '$' + sessionTotalCost.toFixed(5).replace(/0+$/, '');
-      el.textContent = sessionTotalTokens.toLocaleString() + ' tok • ' + cost;
+      el.textContent = sessionTotalTokens.toLocaleString() + ' tok \u2022 ' + cost;
     }
   }
 
@@ -738,7 +992,6 @@ class JarvisPanel {
   }
 
   // ── Thinking indicator with live timer ──
-  // Transforms into a permanent token summary when response arrives.
   let thinkingEl = null;
   let thinkingStartMs = 0;
 
@@ -778,7 +1031,6 @@ class JarvisPanel {
       : Math.floor(elapsed / 60) + 'm ' + String(elapsed % 60).padStart(2, '0') + 's';
 
     if (tokenData) {
-      // Transform into permanent token+time summary line
       const model = formatModel(tokenData.model);
       const cost = tokenData.cost >= 0.01
         ? '$' + tokenData.cost.toFixed(2)
@@ -791,12 +1043,10 @@ class JarvisPanel {
         tokenData.total.toLocaleString() + ' tokens &bull; ' +
         cost + ' &bull; ' + timeStr;
 
-      // Accumulate into session header counter
       sessionTotalTokens += tokenData.total;
       sessionTotalCost += tokenData.cost;
       updateSessionCounter();
     } else {
-      // No token data (error/rules response) — just remove it
       thinkingEl.remove();
     }
     thinkingEl = null;
@@ -874,6 +1124,98 @@ class JarvisPanel {
     reader.onerror = () => showChip('Error reading file');
   });
 
+  // ── Session drawer ──
+  function openDrawer() {
+    drawer.classList.add('open');
+    vscode.postMessage({ command: 'openSessionDrawer' });
+  }
+  function closeDrawer() {
+    drawer.classList.remove('open');
+  }
+
+  newSessBtn.addEventListener('click', () => {
+    vscode.postMessage({ command: 'newSession', isGlobal: globalCheck.checked });
+  });
+
+  histBtn.addEventListener('click', () => {
+    drawer.classList.contains('open') ? closeDrawer() : openDrawer();
+  });
+
+  drawerClose.addEventListener('click', closeDrawer);
+
+  drawerNew.addEventListener('click', () => {
+    closeDrawer();
+    vscode.postMessage({ command: 'newSession', isGlobal: globalCheck.checked });
+  });
+
+  function formatRelativeTime(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr + 'Z');
+      const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
+      if (diffMin < 1) return 'just now';
+      if (diffMin < 60) return diffMin + 'm ago';
+      const diffH = Math.floor(diffMin / 60);
+      if (diffH < 24) return diffH + 'h ago';
+      return Math.floor(diffH / 24) + 'd ago';
+    } catch { return ''; }
+  }
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function populateDrawer(data) {
+    drawerList.innerHTML = '';
+
+    const globals = (data.global || []);
+    if (globals.length > 0) {
+      const lbl = document.createElement('div');
+      lbl.className = 'session-group-label';
+      lbl.textContent = 'Global';
+      drawerList.appendChild(lbl);
+      globals.forEach(s => drawerList.appendChild(createSessionItem(s, '', true)));
+    }
+
+    const projects = data.projects || {};
+    Object.entries(projects).forEach(([wsRoot, proj]) => {
+      const lbl = document.createElement('div');
+      lbl.className = 'session-group-label';
+      lbl.textContent = proj.project_name || wsRoot.split(/[\\\\/]/).pop() || wsRoot;
+      drawerList.appendChild(lbl);
+      (proj.sessions || []).forEach(s => drawerList.appendChild(createSessionItem(s, wsRoot, false)));
+    });
+
+    if (drawerList.children.length === 0) {
+      drawerList.innerHTML = '<div style="padding:12px;font-size:11px;opacity:0.5;text-align:center">No sessions yet</div>';
+    }
+  }
+
+  function createSessionItem(sess, workspaceRoot, isGlobal) {
+    const item = document.createElement('div');
+    item.className = 'session-item' + (sess.id === currentSessionId ? ' active' : '');
+    item.innerHTML =
+      '<div class="session-item-name">' + escHtml(sess.name || '(untitled)') + '</div>' +
+      '<div class="session-item-time">' + formatRelativeTime(sess.updated_at) + '</div>';
+    item.addEventListener('click', () => {
+      closeDrawer();
+      // Prefer the session's own workspace_root — the group key may be empty
+      // when _summary.json hasn't been written yet (session never explicitly closed).
+      const effectiveWsRoot = sess.workspace_root || workspaceRoot;
+      vscode.postMessage({ command: 'loadSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
+    });
+    return item;
+  }
+
+  function clearMessages() {
+    messages.innerHTML = '';
+    sessionTotalTokens = 0;
+    sessionTotalCost = 0;
+    document.getElementById('session-tokens').textContent = '';
+  }
+
   // ── Send message ──
   function send() {
     const text = input.value.trim();
@@ -911,10 +1253,10 @@ class JarvisPanel {
     div.innerHTML =
       '<div class="cmd-card-header">' +
         '<span class="cmd-card-label">Run command?</span>' +
-        '<span class="cmd-card-reason">' + (cmd.reason || '') + '</span>' +
+        '<span class="cmd-card-reason">' + escHtml(cmd.reason || '') + '</span>' +
       '</div>' +
       '<div class="cmd-card-body">' +
-        '<code class="cmd-card-code">' + cmd.command + '</code>' +
+        '<code class="cmd-card-code">' + escHtml(cmd.command) + '</code>' +
         '<div class="cmd-card-actions">' +
           '<button class="cmd-run-btn">Run</button>' +
           '<button class="cmd-skip-btn">Skip</button>' +
@@ -928,7 +1270,6 @@ class JarvisPanel {
     runBtn.addEventListener('click', () => {
       runBtn.disabled = true;
       runBtn.textContent = 'Running...';
-      // Replace Skip with Kill button
       skipBtn.remove();
       const killBtn = document.createElement('button');
       killBtn.className = 'cmd-kill-btn';
@@ -956,7 +1297,8 @@ class JarvisPanel {
 
   // ── Handle messages from extension ──
   window.addEventListener('message', (e) => {
-    const { command, text, tokens, filesWritten, commandsToRun, card_id, success, output } = e.data;
+    const { command, text, tokens, filesWritten, commandsToRun,
+            card_id, success, output, session, sessionsData, sessionName } = e.data;
 
     if (command === 'commandResult') {
       const card = document.getElementById(card_id);
@@ -977,9 +1319,34 @@ class JarvisPanel {
       return;
     }
 
+    if (command === 'sessionCreated') {
+      clearMessages();
+      currentSessionId = session.id;
+      const nameEl = document.getElementById('session-name');
+      if (nameEl) nameEl.textContent = session.name || '';
+      addMsg('New session started.', 'msg-system');
+      return;
+    }
+
+    if (command === 'loadSessionMessages') {
+      clearMessages();
+      currentSessionId = session.id;
+      const nameEl = document.getElementById('session-name');
+      if (nameEl) nameEl.textContent = session.name || '';
+      const msgs = session.messages || [];
+      msgs.forEach(m => addMsg(m.content, m.role === 'user' ? 'msg-user' : 'msg-jarvis'));
+      if (msgs.length > 0) {
+        addMsg('Session restored \u2014 ' + msgs.length + ' message' + (msgs.length === 1 ? '' : 's') + ' loaded.', 'msg-system');
+      }
+      return;
+    }
+
+    if (command === 'sessionsListLoaded') {
+      populateDrawer(sessionsData);
+      return;
+    }
+
     // Only clear the thinking indicator when an actual response or error arrives.
-    // workspaceInfo / serverStatus / prefill arrive while Jarvis is still thinking
-    // and must not collapse the timer prematurely.
     if (command === 'response' || command === 'error') {
       hideTyping(tokens || null);
       isSending = false;
@@ -988,6 +1355,10 @@ class JarvisPanel {
 
     if (command === 'response') {
       addMsg(text, 'msg-jarvis');
+      if (sessionName) {
+        const nameEl = document.getElementById('session-name');
+        if (nameEl) nameEl.textContent = sessionName;
+      }
       if (filesWritten && filesWritten.length > 0) {
         const names = filesWritten.map(p => p.replace(/\\\\/g, '/').split('/').pop()).join(', ');
         addMsg('Wrote: ' + names, 'msg-system');
@@ -1005,7 +1376,7 @@ class JarvisPanel {
       dot.className = text === 'online' ? 'online' : 'offline';
     } else if (command === 'workspaceInfo') {
       const el = document.getElementById('workspace-name');
-      if (el) el.textContent = text ? '— ' + text : '';
+      if (el) el.textContent = text ? '\u2014 ' + text : '';
     }
   });
 

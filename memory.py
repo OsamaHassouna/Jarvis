@@ -11,6 +11,12 @@ from config import MEMORY_FILE, GITHUB_TOKEN, GIST_ID
 # Phase 5.4: Pull memory from Gist only once per process lifetime
 _synced_this_session: bool = False
 
+# The real memory.json path — only sync to Gist when writing/reading THIS file.
+# Tests change `memory.MEMORY_FILE` to a temp path; we must never push test data to Gist.
+_CANONICAL_MEMORY_FILE: str = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
+)
+
 # Default memory structure for a new user
 DEFAULT_MEMORY = {
     "user": {
@@ -29,8 +35,10 @@ def load_memory():
     On first call per session, pulls from GitHub Gist if configured."""
     global _synced_this_session
 
-    # Phase 5.4: Pull from Gist once per session (before reading the local file)
-    if GITHUB_TOKEN and GIST_ID and not _synced_this_session:
+    # Phase 5.4: Pull from Gist once per session (before reading the local file).
+    # Guard: only sync when using the canonical memory.json — never during tests.
+    _is_canonical = os.path.normpath(MEMORY_FILE) == _CANONICAL_MEMORY_FILE
+    if GITHUB_TOKEN and GIST_ID and not _synced_this_session and _is_canonical:
         _synced_this_session = True
         try:
             from tools.sync import pull_memory
@@ -51,8 +59,10 @@ def save_memory(memory: dict):
     with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f, indent=2)
 
-    # Phase 5.4: Push to Gist silently on every save
-    if GITHUB_TOKEN and GIST_ID:
+    # Phase 5.4: Push to Gist silently on every save.
+    # Guard: only sync when using the canonical memory.json — never during tests.
+    _is_canonical = os.path.normpath(MEMORY_FILE) == _CANONICAL_MEMORY_FILE
+    if GITHUB_TOKEN and GIST_ID and _is_canonical:
         try:
             from tools.sync import push_memory
             push_memory(MEMORY_FILE, GITHUB_TOKEN, GIST_ID)
@@ -276,13 +286,23 @@ Interface features (tell the user about these when relevant):
 - Commands (work in both terminal and VS Code chat):
     /rules                     — list, add, remove global rules
     /project rules             — list, add, remove rules for the current project only
+    /memory                    — show full memory summary (projects, preferences, history count)
+    /memory projects           — list all projects stored in memory
+    /memory delete <name>      — permanently delete a project from memory by name
+    /memory clear projects     — delete ALL projects from memory at once
+    /memory clear history      — clear conversation history
+    /memory preferences        — list saved preferences
 
 Behavior rules:
 - Be concise and direct. Answer only what was asked.
 - Never mention server status, connection info, or whether you are online — the user already knows.
 - Greet only once per session. Do not re-greet on every message.
 - No filler phrases like "Great question!" or "Sure thing!"
-- You CAN run terminal commands. Use the run_terminal_command tool for any CLI operation the user asks for: ng generate, npm install, dotnet build, dotnet run, git commands, etc. Never say you can't run terminal commands — queue them using the tool and the user will approve each one before it runs."""
+- For CLI operations the user asks about, provide the exact command they should run. Format it in a code block. This is terminal-only mode — do NOT output raw XML or tool-call syntax.
+- You CANNOT execute commands in terminal mode. Never say "I'll run it", "Noted", or imply you will execute anything. The user must copy-paste and run the command themselves.
+- If the user says "approve", "run it", or "execute", respond: "Terminal mode can't run commands directly — copy the command above and paste it in your terminal."
+- You CAN manage memory. If the user asks to delete, forget, or clear a project, tell them the exact command: '/memory delete <name>'. Never say you can't manage memory — the /memory commands handle everything.
+- Never spawn agents or sub-tasks to delete from memory. Always direct the user to the /memory commands."""
 
     return summary.strip()
 
