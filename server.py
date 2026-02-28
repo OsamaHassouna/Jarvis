@@ -18,6 +18,7 @@ from orchestrator import (
     process_for_vscode, process_briefing,
     get_last_files_written, get_pending_commands, run_single_command, kill_command,
     get_last_session_id, get_last_session_name,
+    start_vscode_agent_job,
 )
 from tools.sessions import (
     create_session, get_session, list_all_sessions,
@@ -67,7 +68,7 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         qs     = parse_qs(parsed.query)
 
         if path == "/status":
-            self._send_json(200, {"status": "running", "version": "phase10"})
+            self._send_json(200, {"status": "running", "version": "phase12"})
 
         elif path == "/briefing":
             self._send_json(200, {"briefing": process_briefing()})
@@ -98,6 +99,19 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             set_active_session(session_id, workspace_root, is_global)
             self._send_json(200, {"session": sess})
 
+        elif path == "/agents/status":
+            # Phase 12 — poll for agent job progress
+            job_id = qs.get("job_id", [""])[0]
+            if not job_id:
+                self._send_json(400, {"error": "job_id is required"})
+                return
+            from tools.agent_jobs import get_job
+            job = get_job(job_id)
+            if job is None:
+                self._send_json(404, {"error": "Job not found"})
+                return
+            self._send_json(200, job)
+
         else:
             self._send_json(404, {"error": "Not found"})
 
@@ -125,6 +139,23 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     session_id=body.get("session_id", ""),
                     is_global=bool(body.get("is_global", False)),
                 )
+                # Phase 12: complex tasks return a sentinel — route to background agent job
+                if response == "__COMPLEX_TASK__":
+                    agent_job_id = start_vscode_agent_job(
+                        message, body.get("workspace_root", "")
+                    )
+                    print(f"   Agent job started: {agent_job_id}")
+                    self._send_json(200, {
+                        "response": None,
+                        "agent_job_id": agent_job_id,
+                        "tokens": None,
+                        "files_written": [],
+                        "commands_to_run": [],
+                        "session_id": get_last_session_id(),
+                        "session_name": get_last_session_name(),
+                    })
+                    return
+
                 print(f"   Jarvis: {response[:80]}...")
 
                 last = tracker.get_last()
@@ -230,6 +261,23 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 result = kill_command(job_id)
                 print(f"\n[VS Code] Kill {job_id}: {result['message']}")
                 self._send_json(200, result)
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/run-agents":
+            # Phase 12 — explicit endpoint (also usable from templates in VS Code future)
+            try:
+                body = self._read_body()
+                message        = body.get("message", "").strip()
+                workspace_root = body.get("workspace_root", "")
+                if not message:
+                    self._send_json(400, {"error": "message is required"})
+                    return
+                agent_job_id = start_vscode_agent_job(message, workspace_root)
+                print(f"\n[VS Code] /run-agents job: {agent_job_id}")
+                self._send_json(200, {"job_id": agent_job_id, "status": "starting"})
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
             except Exception as e:

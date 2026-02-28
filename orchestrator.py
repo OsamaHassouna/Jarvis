@@ -675,7 +675,59 @@ def handle_template_command(message: str, workspace_root: str = "") -> str | Non
             return f'Template "{name}" deleted.'
         return f'Template "{name}" not found.'
 
-    return f'Unknown /template command: "{after}"\n\nUsage: /template list | use | save | delete | info'
+    # ── /template rename <old-name> <new-name>  (also accepts "old to new") ───
+    if after_lower.startswith("rename "):
+        from tools.templates import rename_template
+        rest = after[7:].strip()
+        if " to " in rest.lower():
+            idx = rest.lower().index(" to ")
+            old_name = rest[:idx].strip()
+            new_name = rest[idx + 4:].strip()
+        else:
+            parts = rest.split(None, 1)
+            if len(parts) < 2:
+                return "Usage: `/template rename <old-name> <new-name>`"
+            old_name, new_name = parts[0].strip(), parts[1].strip()
+        if not old_name or not new_name:
+            return "Usage: `/template rename <old-name> <new-name>`"
+        if rename_template(old_name, new_name, workspace_root):
+            return (
+                f'Template "{old_name}" renamed to "{new_name}".\n\n'
+                f'Run it with: `/template use {new_name}`'
+            )
+        return f'Template "{old_name}" not found.'
+
+    # ── /template edit <name> description <text>
+    # ── /template edit <name> triggers <phrase1>, <phrase2> ──────────────────
+    if after_lower.startswith("edit "):
+        from tools.templates import update_template_meta
+        rest = after[5:].strip()
+        rest_lower = rest.lower()
+        if " description " in rest_lower:
+            idx = rest_lower.index(" description ")
+            name = rest[:idx].strip()
+            new_desc = rest[idx + 13:].strip()
+            if not name or not new_desc:
+                return "Usage: `/template edit <name> description <text>`"
+            if update_template_meta(name, workspace_root, description=new_desc):
+                return f'Template "{name}" description updated to: {new_desc}'
+            return f'Template "{name}" not found.'
+        if " triggers " in rest_lower:
+            idx = rest_lower.index(" triggers ")
+            name = rest[:idx].strip()
+            phrases = [p.strip() for p in rest[idx + 10:].split(",") if p.strip()]
+            if not name or not phrases:
+                return "Usage: `/template edit <name> triggers <phrase1>, <phrase2>`"
+            if update_template_meta(name, workspace_root, trigger_phrases=phrases):
+                return f'Template "{name}" triggers updated: {", ".join(phrases)}'
+            return f'Template "{name}" not found.'
+        return (
+            "Usage:\n"
+            "  `/template edit <name> description <text>`\n"
+            "  `/template edit <name> triggers <phrase1>, <phrase2>`"
+        )
+
+    return f'Unknown /template command: "{after}"\n\nType `/template list` to see all commands.'
 
 
 def handle_rules_command(message: str, workspace_root: str = "") -> str | None:
@@ -1510,6 +1562,22 @@ def process_for_vscode(
         workspace_root, attachment_text, attachment_name
     )
 
+    # Template trigger auto-detection: suggest a matching template before doing
+    # anything else, so the user can run it directly instead of re-describing the task.
+    if not message.strip().startswith("/"):
+        from tools.templates import find_by_trigger
+        _matched = find_by_trigger(message, workspace_root or "")
+        if _matched:
+            _tname = _matched["name"]
+            _n = len(_matched.get("agents", []))
+            _desc = f" — {_matched['description']}" if _matched.get("description") else ""
+            return (
+                f'This looks like the **{_tname}** template ({_n} agents{_desc}).\n\n'
+                f'Run it:    `/template use {_tname}`\n'
+                f'With context:  `/template use {_tname} for <feature-name>`\n\n'
+                f'Or just keep typing and I\'ll break down the task manually.'
+            )
+
     # Instant keyword check — VS Code never spawns agents.
     # But skip the redirect if the message is clearly a question/informational request,
     # even if it happens to contain a keyword like "multiple" or "system".
@@ -1522,11 +1590,7 @@ def process_for_vscode(
     _lower_msg = message.lower().strip()
     _is_question = any(_lower_msg.startswith(q) for q in _QUESTION_STARTS) or _lower_msg.endswith("?")
     if not _is_question and is_complex_task(message):
-        return (
-            "This task needs agent execution. Open a terminal and run:\n\n"
-            "  python main.py\n\n"
-            f"Then type: {message}"
-        )
+        return "__COMPLEX_TASK__"   # Phase 12: server.py routes this to start_vscode_agent_job()
 
     global _vscode_files_written, _vscode_pending_commands
     _vscode_files_written = []      # reset for this request
@@ -1621,6 +1685,94 @@ def process_for_vscode(
     return final_text
 
 
+def handle_complex_task_vscode(user_input: str, workspace_root: str, job_id: str) -> None:
+    """
+    Phase 12 — VS Code variant of handle_complex_task().
+    Runs in a background daemon thread. Never calls input().
+    All progress flows through the agent_jobs job store.
+    """
+    from tools.agent_jobs import register_agents, update_job_status
+    from tools.project_scanner import scan_project, get_context_string
+    from tools.handoff import cleanup_handoff
+    from agents.agent import Agent
+    from agents.agent_pool import AgentPool
+
+    try:
+        if not verify_claude_code_installed():
+            update_job_status(
+                job_id, "failed",
+                error="Claude Code CLI not found. Make sure 'claude' is in your PATH."
+            )
+            return
+
+        # Breakdown — uses Opus for quality
+        agent_definitions, _ = breakdown_into_agents(user_input, MODEL_OPUS)
+        global _last_agent_defs
+        _last_agent_defs = list(agent_definitions)
+
+        # Register the real agent list in the job store
+        register_agents(job_id, agent_definitions)
+
+        working_dir = workspace_root or os.getcwd()
+        project_info = scan_project(working_dir)
+        project_context = get_context_string(project_info)
+
+        agents = []
+        for agent_def in agent_definitions:
+            task = agent_def["task"]
+            if project_context:
+                task = f"{task}\n\nProject context:\n{project_context}"
+            agents.append(Agent(
+                id=agent_def["id"],
+                task=task,
+                context=agent_def.get("context", ""),
+                depends_on=agent_def.get("depends_on", []),
+                working_dir=working_dir,
+                auto_git=False,
+                auto_test=False,
+                test_command="",
+            ))
+
+        pool = AgentPool(agents=agents, working_dir=working_dir)
+        pool.execute_vscode(job_id)
+
+        cleanup_handoff(working_dir)
+
+        from tools.agent_jobs import get_job
+        job = get_job(job_id)
+        summary = (job or {}).get("summary", {})
+        if summary.get("succeeded", 0) > 0:
+            save_task_to_project(
+                project_path=working_dir,
+                task=user_input,
+                agents_succeeded=summary["succeeded"],
+                agents_total=summary["total"],
+                stack=project_info.get("stack", [])
+            )
+
+    except Exception as e:
+        from tools.agent_jobs import update_job_status as _upd
+        _upd(job_id, "failed", error=str(e))
+
+
+def start_vscode_agent_job(user_input: str, workspace_root: str) -> str:
+    """
+    Phase 12 — Create a job, fire the background thread, return job_id immediately.
+    Called by server.py when the /chat response is the __COMPLEX_TASK__ sentinel.
+    """
+    import threading as _threading
+    from tools.agent_jobs import create_job, generate_job_id
+    job_id = generate_job_id()
+    create_job(job_id, workspace_root)
+    t = _threading.Thread(
+        target=handle_complex_task_vscode,
+        args=(user_input, workspace_root, job_id),
+        daemon=True,
+    )
+    t.start()
+    return job_id
+
+
 def _run_template_in_terminal(user_input: str) -> None:
     """
     Called when the user types /template use <name> [for <ctx>] in terminal mode.
@@ -1699,6 +1851,22 @@ def process(user_input: str, history: list) -> str:
             _run_template_in_terminal(user_input)
         add_to_history("assistant", tmpl_response)
         return tmpl_response
+
+    # Template trigger auto-detection (terminal mode)
+    if not user_input.strip().startswith("/"):
+        from tools.templates import find_by_trigger
+        _matched = find_by_trigger(user_input)
+        if _matched:
+            _tname = _matched["name"]
+            _n = len(_matched.get("agents", []))
+            _desc = f" — {_matched['description']}" if _matched.get("description") else ""
+            suggestion = (
+                f'\nThis looks like the "{_tname}" template ({_n} agents{_desc}).\n'
+                f'Run it with:  /template use {_tname}\n'
+                f'With context: /template use {_tname} for <feature-name>\n'
+                f'Or press Enter to continue with your original message.\n'
+            )
+            print(suggestion)
 
     # Phase 3.1: Use AI to classify complexity and select model
     classification = ai_classify_task(user_input)

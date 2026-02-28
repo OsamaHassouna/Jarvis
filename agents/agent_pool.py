@@ -204,6 +204,79 @@ class AgentPool:
 
         return self.build_summary()
 
+    # ── Phase 12: VS Code execution path ─────────────────────────────────────
+
+    def execute_vscode(self, job_id: str) -> Dict:
+        """
+        VS Code variant of execute().
+        - No input() calls — all agents auto-approved.
+        - Each agent has an on_status_change callback that writes to the job store.
+        - Runs in a background thread; caller polls /agents/status for progress.
+        """
+        from tools.agent_jobs import update_job_status, update_agent_status
+
+        update_job_status(job_id, "running")
+
+        # Wire status callbacks onto every agent
+        def make_callback(agent_id: str):
+            def cb(aid: str, **kwargs):
+                update_agent_status(job_id, aid, **kwargs)
+            return cb
+
+        for agent in self.agents:
+            agent.on_status_change = make_callback(agent.id)
+            agent.vscode_mode = True   # skip input() in ask_user_for_help
+
+        # Dependency-respecting parallel execution loop (same as execute())
+        while not self.all_done():
+            ready = [
+                a for a in self.agents
+                if a.status == AgentStatus.PENDING
+                and a.can_run(self.completed_ids)
+            ]
+
+            if not ready:
+                time.sleep(0.5)
+                continue
+
+            for agent in ready:
+                agent.status = AgentStatus.WAITING
+
+            threads = []
+            for agent in ready:
+                t = threading.Thread(
+                    target=self._run_agent_vscode,
+                    args=(agent,),
+                    daemon=True,
+                )
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+        summary = self.build_summary()
+        status = "done"
+        update_job_status(job_id, status, summary=summary)
+        return summary
+
+    def _run_agent_vscode(self, agent: Agent) -> None:
+        """Thread target for a single agent in VS Code mode."""
+        agent.run()
+        with self.state_lock:
+            if agent.status == AgentStatus.SUCCESS:
+                self.completed_ids.append(agent.id)
+            else:
+                # Retry once before giving up (no user prompt)
+                if agent.retry_count < agent.max_retries and agent.has_dependents(self.agents):
+                    success = agent.retry()
+                    if success:
+                        self.completed_ids.append(agent.id)
+                        return
+                self.failed_ids.append(agent.id)
+                agent.ask_user_for_help()   # vscode_mode=True → auto-skips
+                self._skip_dependents(agent.id)
+
     def build_summary(self) -> Dict:
         """Build a final summary of all agent results."""
         succeeded = [a for a in self.agents if a.status == AgentStatus.SUCCESS]

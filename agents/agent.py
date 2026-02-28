@@ -4,7 +4,7 @@
 # Agents only receive the context they need — not the full picture
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Callable
 from enum import Enum
 from tools.claude_code import run_claude_code
 
@@ -50,6 +50,11 @@ class Agent:
     # Phase 9: structured output populated after success
     files_created: List[str] = field(default_factory=list)
     files_modified: List[str] = field(default_factory=list)
+    # Phase 12: optional callback for VS Code live status updates
+    # Signature: (agent_id: str, **kwargs) -> None
+    on_status_change: Optional[Callable] = field(default=None, repr=False, compare=False)
+    # Phase 12: when True, ask_user_for_help() skips input() and auto-skips
+    vscode_mode: bool = False
 
     def can_run(self, completed_agent_ids: List[str]) -> bool:
         """Check if all dependencies are completed."""
@@ -65,6 +70,7 @@ class Agent:
         Returns True if successful, False if failed.
         """
         self.status = AgentStatus.RUNNING
+        self._notify(status="running")
         print(f"\n🤖 Agent [{self.id}] starting: {self.task[:60]}...")
 
         # Phase 9: inject handoff context from completed dependency agents
@@ -112,6 +118,12 @@ class Agent:
                     if self.files_modified:
                         print(f"   Modified: {', '.join(self.files_modified)}")
 
+            self._notify(
+                status="success",
+                output=self.output[:500],
+                files_created=self.files_created,
+                files_modified=self.files_modified,
+            )
             print(f"✅ Agent [{self.id}] completed successfully")
 
             # Phase 6.1: Auto git commit
@@ -151,6 +163,7 @@ class Agent:
         else:
             self.status = AgentStatus.FAILED
             self.error = result["error"]
+            self._notify(status="failed", error=self.error)
             print(f"❌ Agent [{self.id}] failed: {self.error}")
             return False
 
@@ -160,11 +173,26 @@ class Agent:
         print(f"🔄 Agent [{self.id}] retrying (attempt {self.retry_count}/{self.max_retries})...")
         return self.run()
 
+    def _notify(self, **kwargs) -> None:
+        """Fire the on_status_change callback if one is set. Best-effort."""
+        if self.on_status_change:
+            try:
+                self.on_status_change(self.id, **kwargs)
+            except Exception:
+                pass
+
     def ask_user_for_help(self) -> bool:
         """
         Ask the user for help when agent keeps failing.
+        In VS Code mode (vscode_mode=True), skips input() and auto-skips.
         Returns True if user wants to retry, False to skip.
         """
+        if self.vscode_mode:
+            self.status = AgentStatus.SKIPPED
+            self._notify(status="skipped", error=self.error)
+            print(f"⏭️  Agent [{self.id}] auto-skipped (VS Code mode)")
+            return False
+
         print(f"\n⚠️  Agent [{self.id}] needs your help!")
         print(f"Task: {self.task}")
         print(f"Error: {self.error}")

@@ -1,6 +1,6 @@
 # Jarvis — Full Roadmap & Vision
 **Last Updated:** February 2026
-**Current Status:** Phase 11 Complete ✅ | 195/195 tests passing
+**Current Status:** Phase 12 Complete ✅ | 229/229 tests passing
 
 ---
 
@@ -82,43 +82,41 @@ Commands:
 /template delete <name>
 ```
 
-**See:** [phase11_plan.md](phase11_plan.md)
+**Post-Phase-12 improvements to templates:**
+- `format_template_list()` reformatted — name on its own line, `[global/project]` indented below; scope clarified (`[global]` = all projects, `[project]` = this workspace only)
+- `/template rename <old> <new>` — rename any template (also accepts `old to new` phrasing)
+- `/template edit <name> description <text>` and `/template edit <name> triggers <p1>, <p2>`
+- `find_by_trigger()` wired into both VS Code and terminal chat flows; two-pass matching (exact → keyword ≥60%)
+- **14 additional tests** — 34 total in `test_templates.py`
+
+**See:** [phase11_plan.md](phase11_plan.md) · fixes documented in [phase12_plan.md](phase12_plan.md#pre-phase-13-fixes)
 
 ---
 
-## Phase 12 — Full VS Code Parity
-**Priority: HIGH — this is where Jarvis needs to go**
-**Goal:** VS Code panel becomes a first-class interface equal to the terminal. No more
-"open a terminal to do complex tasks."
+## Phase 12 — Full VS Code Parity ✅ Complete
 
-### What to build:
+**Goal:** VS Code panel becomes a first-class interface equal to the terminal. No more "open a terminal to do complex tasks."
 
-**12.1 — Agent execution from VS Code**
-- POST `/run-complex` endpoint in `server.py`
-- VS Code sends task → server spawns agent pool → streams progress back via SSE or WebSocket
-- Panel shows live agent status instead of "go to terminal"
+### What was built:
 
-**12.2 — Agent progress panel**
+- `tools/agent_jobs.py` — in-memory job store (job_id → state), no disk I/O, thread-safe
+- `agents/agent.py` — `on_status_change` callback + `vscode_mode` flag (skips `input()` prompts)
+- `agents/agent_pool.py` — `execute_vscode(job_id)` — background-safe parallel execution with job store updates
+- `orchestrator.py` — `handle_complex_task_vscode()` + `start_vscode_agent_job()` — daemon thread, no `input()` calls
+- `server.py` — `/run-agents` POST, `/agents/status` GET, `__COMPLEX_TASK__` sentinel routing in `/chat`
+- `jarvisPanel.ts` — polling (2s interval), live agent panel UI with status icons + file badges
+- `__COMPLEX_TASK__` sentinel — returned by `process_for_vscode()` for complex tasks; server routes to agent job
+- **20 tests** — all passing
+
+Agent panel shows live status:
 ```
-Running: "Build login page"  ━━━━━━━━━━━━━━━━  3/4 agents
-
-  ✅ agent_1  login-component    12s   890 tokens
-  ✅ agent_2  auth-service       18s   1,240 tokens
-  ⟳ agent_3  unit-tests         running...
-  ⏸ agent_4  integration        waiting for agent_3
+  ✅ component   create login component     12s
+  ✅ service     create auth service        18s
+  ⟳ tests       write unit tests           running…
+  ⏸ e2e         integration tests          waiting for tests
 ```
 
-**12.3 — Approve/skip per agent (VS Code buttons)**
-Instead of terminal prompts (`yes/no`), VS Code shows inline buttons:
-- [Approve Plan] [Cancel] before task starts
-- [Skip this agent] during execution
-
-**12.4 — File change preview**
-After agent completes, show diff of what changed — with [Apply] / [Revert] buttons.
-
-**Estimated tests:** 12-15
-**Effort:** 3-4 sessions
-**Risk:** SSE/WebSocket adds complexity. Could start with polling (simpler) then upgrade.
+**See:** [phase12_plan.md](phase12_plan.md)
 
 ---
 
@@ -211,7 +209,7 @@ Given your stack (Angular + .NET, VS Code user) and current state:
 | Priority | Item | Why | Effort |
 |---|---|---|---|
 | 1 | ~~**Phase 11** (templates)~~ | ✅ Done | — |
-| 2 | **Phase 12** (VS Code parity) | Makes VS Code a real interface | 3-4 sessions |
+| 2 | ~~**Phase 12** (VS Code parity)~~ | ✅ Done | — |
 | 3 | **Phase 13** (learning) | Needs time + data to be useful | 1-2 sessions |
 | 4 | **Phase 14** (multi-project) | Only needed for large multi-repo work | 2-3 sessions |
 | 5 | **Phase 15** (proactive watcher) | Cool but lower urgency | 2-3 sessions |
@@ -279,13 +277,14 @@ You (terminal, VS Code, any machine)
 | Phase 8 | 22 | ✅ All passing |
 | Phase 9 | 15 | ✅ All passing |
 | Phase 10 | 21 | ✅ All passing |
-| Phase 11 | 20 | ✅ All passing |
-| **Total** | **195 passing** | |
+| Phase 11 | 34 | ✅ All passing (20 original + 14 post-P12 fixes) |
+| Phase 12 | 20 | ✅ All passing |
+| **Total** | **229 passing** | |
 
 ---
 
 ## Phase docs
-[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md)
+[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md) · [phase12](phase12_plan.md)
 
 ## How to continue in a new session
 Start with: `docs/roadmap.md` + the relevant phase doc + specific files.

@@ -62,6 +62,8 @@ class JarvisPanel {
         this._currentSessionId = '';
         this._currentIsGlobal = false;
         this._sessionRestored = false;
+        // Phase 12: agent job polling
+        this._agentJobId = '';
         this._panel = panel;
         this._panel.webview.html = this._getHtml();
         // Keep _lastKnownEditor updated — activeTextEditor becomes undefined when webview gets focus
@@ -154,9 +156,16 @@ class JarvisPanel {
             if (data.session_id) {
                 this._currentSessionId = data.session_id;
             }
+            // Phase 12: complex task — start polling instead of showing a text response
+            if (data.agent_job_id) {
+                this._agentJobId = data.agent_job_id;
+                this._post('agentJobStarted', '', { job_id: data.agent_job_id });
+                this._startAgentPolling(data.agent_job_id);
+                return;
+            }
             const filesWritten = data.files_written ?? [];
             const commandsToRun = data.commands_to_run ?? [];
-            this._post('response', data.response, {
+            this._post('response', data.response ?? '', {
                 ...(data.tokens ? { tokens: data.tokens } : {}),
                 ...(filesWritten.length > 0 ? { filesWritten } : {}),
                 ...(commandsToRun.length > 0 ? { commandsToRun } : {}),
@@ -309,6 +318,30 @@ class JarvisPanel {
         catch {
             this._post('commandResult', '', { card_id, success: false, output: 'Could not reach Jarvis server.' });
         }
+    }
+    // ── Phase 12: Agent job polling ───────────────────────────────────────────
+    _startAgentPolling(jobId) {
+        if (this._agentPollTimer) {
+            clearInterval(this._agentPollTimer);
+        }
+        this._agentPollTimer = setInterval(async () => {
+            try {
+                const res = await fetch(`${JARVIS_SERVER}/agents/status?job_id=${encodeURIComponent(jobId)}`);
+                if (!res.ok) {
+                    return;
+                }
+                const job = await res.json();
+                this._post('agentStatusUpdate', '', { job });
+                const status = job['status'];
+                if (status === 'done' || status === 'failed') {
+                    clearInterval(this._agentPollTimer);
+                    this._agentPollTimer = undefined;
+                    this._agentJobId = '';
+                    this._post('agentJobDone', '', { job });
+                }
+            }
+            catch { /* transient error — keep polling */ }
+        }, 2000);
     }
     _post(command, text, extra) {
         this._panel.webview.postMessage({ command, text, ...extra });
@@ -766,6 +799,63 @@ class JarvisPanel {
     font-size: 12px;
     margin: 2px 0;
   }
+  /* ── Phase 12: Agent panel ── */
+  .agent-panel {
+    border: 1px solid rgba(100,150,255,0.35);
+    border-left: 3px solid #569cd6;
+    border-radius: 6px;
+    background: var(--vscode-editor-inactiveSelectionBackground, rgba(20,30,50,0.6));
+    font-size: 12px;
+    margin: 6px 0;
+    overflow: hidden;
+  }
+  .agent-panel-header {
+    padding: 7px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #569cd6;
+    border-bottom: 1px solid rgba(100,150,255,0.2);
+  }
+  .agent-rows { padding: 4px 0; }
+  .ag-row {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 12px;
+    font-size: 11px;
+    border-bottom: 1px solid rgba(128,128,128,0.08);
+  }
+  .ag-row:last-child { border-bottom: none; }
+  .ag-icon { flex-shrink: 0; font-size: 12px; min-width: 14px; }
+  .ag-id   { font-weight: 600; min-width: 80px; flex-shrink: 0; }
+  .ag-task { flex: 1; opacity: 0.8; }
+  .ag-deps { font-size: 10px; opacity: 0.5; font-style: italic; }
+  .ag-time { font-size: 10px; opacity: 0.5; margin-left: auto; }
+  .ag-error {
+    width: 100%; margin-top: 3px; padding: 4px 6px;
+    background: rgba(244,135,113,0.1); border-radius: 3px;
+    color: #f48771; font-size: 10px; word-break: break-all;
+  }
+  .ag-files { width: 100%; display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+  .ag-file {
+    font-size: 10px; padding: 1px 5px; border-radius: 3px; cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .ag-file:hover { opacity: 0.7; }
+  .ag-created  { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+  .ag-modified { background: rgba(206,145,120,0.15); color: #ce9178; }
+  /* status colours */
+  .ag-running .ag-icon { color: #4ec9b0; animation: spin 1.4s linear infinite; }
+  .ag-success .ag-icon { color: #4ec9b0; }
+  .ag-failed  .ag-icon { color: #f48771; }
+  .ag-skip    .ag-icon { color: #808080; }
+  .ag-waiting .ag-icon { color: #808080; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .cmd-card-header {
     padding: 8px 12px 0 12px;
     display: flex;
@@ -1701,8 +1791,105 @@ class JarvisPanel {
       isSending = true;
       sendBtn.disabled = true;
       showTyping();
+
+    } else if (command === 'agentJobStarted') {
+      // Phase 12: complex task started — show agent progress panel
+      hideTyping();
+      createAgentPanel(msg.job_id);
+
+    } else if (command === 'agentStatusUpdate') {
+      // Phase 12: poll result — update agent rows
+      updateAgentPanel(msg.job);
+
+    } else if (command === 'agentJobDone') {
+      // Phase 12: all agents finished
+      finalizeAgentPanel(msg.job);
+      isSending = false;
+      sendBtn.disabled = !input.value.trim();
     }
   });
+
+  // ── Phase 12: Agent panel helpers ──────────────────────────────────────────
+
+  let _agentPanelId = '';
+
+  function createAgentPanel(jobId) {
+    _agentPanelId = 'agent-panel-' + jobId;
+    const div = document.createElement('div');
+    div.className = 'agent-panel';
+    div.id = _agentPanelId;
+    div.innerHTML = '<div class="agent-panel-header">' +
+      '<span class="agent-panel-icon">\u26c1</span> ' +
+      '<span class="agent-panel-title">Running agents\u2026</span>' +
+      '</div>' +
+      '<div class="agent-rows" id="agent-rows-' + jobId + '"></div>';
+    msgs.appendChild(div);
+    scrollToBottom();
+  }
+
+  function _agentStatusIcon(status) {
+    const icons = { pending: '\u25cb', running: '\u25cf', success: '\u2713', failed: '\u2717', skipped: '\u2212', waiting: '\u25cc' };
+    return icons[status] || '\u25cb';
+  }
+  function _agentStatusClass(status) {
+    const cls = { pending: 'ag-pending', running: 'ag-running', success: 'ag-success', failed: 'ag-failed', skipped: 'ag-skip', waiting: 'ag-waiting' };
+    return cls[status] || 'ag-pending';
+  }
+  function _elapsed(startedAt) {
+    if (!startedAt) { return ''; }
+    const secs = Math.round((Date.now() / 1000) - startedAt);
+    return secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+  }
+
+  function updateAgentPanel(job) {
+    const rowsEl = document.getElementById('agent-rows-' + job.job_id);
+    if (!rowsEl) { return; }
+    const agents = job.agents || {};
+    rowsEl.innerHTML = Object.values(agents).map(function(a) {
+      const icon = _agentStatusIcon(a.status);
+      const cls  = _agentStatusClass(a.status);
+      const time = a.started_at ? ' \u00b7 ' + _elapsed(a.started_at) : '';
+      const deps = a.depends_on && a.depends_on.length ? '<span class="ag-deps">after: ' + a.depends_on.join(', ') + '</span>' : '';
+      const files = (a.files_created.length + a.files_modified.length > 0)
+        ? '<div class="ag-files">' +
+            a.files_created.map(function(f) { return '<span class="ag-file ag-created" data-path="' + f + '">' + f.split(/[\\/]/).pop() + ' +</span>'; }).join('') +
+            a.files_modified.map(function(f) { return '<span class="ag-file ag-modified" data-path="' + f + '">' + f.split(/[\\/]/).pop() + ' ~</span>'; }).join('') +
+          '</div>'
+        : '';
+      return '<div class="ag-row ' + cls + '">' +
+        '<span class="ag-icon">' + icon + '</span>' +
+        '<span class="ag-id">' + a.id + '</span>' +
+        '<span class="ag-task">' + (a.task || '').substring(0, 70) + '</span>' +
+        deps +
+        '<span class="ag-time">' + time + '</span>' +
+        files +
+        (a.error ? '<div class="ag-error">' + a.error.substring(0, 200) + '</div>' : '') +
+      '</div>';
+    }).join('');
+
+    // Wire up file clicks to open the file in VS Code
+    rowsEl.querySelectorAll('.ag-file').forEach(function(el) {
+      el.addEventListener('click', function() {
+        vscode.postMessage({ command: 'openFile', path: el.getAttribute('data-path') });
+      });
+    });
+
+    scrollToBottom();
+  }
+
+  function finalizeAgentPanel(job) {
+    const panel = document.getElementById(_agentPanelId);
+    if (!panel) { return; }
+    const titleEl = panel.querySelector('.agent-panel-title');
+    const s = job.summary || {};
+    const ok = s.succeeded || 0;
+    const fail = s.failed || 0;
+    const total = s.total || 0;
+    if (titleEl) {
+      titleEl.textContent = ok + '/' + total + ' agents done' + (fail > 0 ? ' (' + fail + ' failed)' : '');
+    }
+    updateAgentPanel(job);
+  }
 
   // Check server on load
   console.log('[Jarvis] webview script started, sending checkServer');

@@ -211,3 +211,122 @@ def test_builtin_templates_exist(monkeypatch):
     assert "dotnet-endpoint" in names
     assert "angular-auth-guard" in names
     assert "dotnet-ef-migration" in names
+
+
+# ── Rename + edit (pre-Phase-13 fixes) ───────────────────────────────────────
+
+def test_rename_template_changes_name():
+    from tools.templates import save_template, rename_template, get_template
+    save_template("old-name", SAMPLE_AGENTS)
+    assert rename_template("old-name", "new-name") is True
+    assert get_template("new-name") is not None
+    assert get_template("old-name") is None
+
+
+def test_rename_template_preserves_agents():
+    from tools.templates import save_template, rename_template, get_template
+    save_template("feat-a", SAMPLE_AGENTS, description="Keep this")
+    rename_template("feat-a", "feat-b")
+    t = get_template("feat-b")
+    assert t["description"] == "Keep this"
+    assert len(t["agents"]) == 2
+
+
+def test_rename_template_missing_returns_false():
+    from tools.templates import rename_template
+    assert rename_template("ghost", "whatever") is False
+
+
+def test_update_template_meta_description():
+    from tools.templates import save_template, update_template_meta, get_template
+    save_template("editable", SAMPLE_AGENTS, description="Old desc")
+    assert update_template_meta("editable", description="New desc") is True
+    assert get_template("editable")["description"] == "New desc"
+
+
+def test_update_template_meta_triggers():
+    from tools.templates import save_template, update_template_meta, get_template
+    save_template("trigger-test", SAMPLE_AGENTS, trigger_phrases=["old phrase"])
+    update_template_meta("trigger-test", trigger_phrases=["phrase one", "phrase two"])
+    t = get_template("trigger-test")
+    assert "phrase one" in t["trigger_phrases"]
+    assert "phrase two" in t["trigger_phrases"]
+
+
+def test_update_template_meta_missing_returns_false():
+    from tools.templates import update_template_meta
+    assert update_template_meta("ghost", description="Whatever") is False
+
+
+def test_handle_template_rename_command():
+    from tools.templates import save_template, get_template
+    from orchestrator import handle_template_command
+    save_template("before-rename", SAMPLE_AGENTS)
+    result = handle_template_command("/template rename before-rename after-rename")
+    assert "after-rename" in result
+    assert get_template("after-rename") is not None
+    assert get_template("before-rename") is None
+
+
+def test_handle_template_rename_with_to_separator():
+    from tools.templates import save_template, get_template
+    from orchestrator import handle_template_command
+    save_template("alpha", SAMPLE_AGENTS)
+    result = handle_template_command("/template rename alpha to beta")
+    assert "beta" in result
+    assert get_template("beta") is not None
+
+
+def test_handle_template_rename_missing():
+    from orchestrator import handle_template_command
+    result = handle_template_command("/template rename ghost new-name")
+    assert "not found" in result.lower()
+
+
+def test_handle_template_edit_description():
+    from tools.templates import save_template, get_template
+    from orchestrator import handle_template_command
+    save_template("edit-desc", SAMPLE_AGENTS, description="Initial")
+    result = handle_template_command("/template edit edit-desc description Updated description")
+    assert "updated" in result.lower()
+    assert get_template("edit-desc")["description"] == "Updated description"
+
+
+def test_handle_template_edit_triggers():
+    from tools.templates import save_template, get_template
+    from orchestrator import handle_template_command
+    save_template("edit-trg", SAMPLE_AGENTS)
+    result = handle_template_command("/template edit edit-trg triggers add feature, new feature")
+    assert "updated" in result.lower() or "triggers" in result.lower()
+    t = get_template("edit-trg")
+    assert "add feature" in t["trigger_phrases"]
+
+
+def test_find_by_trigger_keyword_match():
+    """Keyword match: phrase words appear in message but not as exact substring."""
+    from tools.templates import save_template, find_by_trigger
+    save_template("kw-test", SAMPLE_AGENTS, trigger_phrases=["angular auth guard"])
+    # Message has all three keywords but not as exact substring
+    match = find_by_trigger("I need to create a guard for angular route protection")
+    assert match is not None
+    assert match["name"] == "kw-test"
+
+
+def test_find_by_trigger_keyword_below_threshold():
+    """Only one keyword present — should NOT match (below 60%)."""
+    from tools.templates import save_template, find_by_trigger
+    save_template("strict-test", SAMPLE_AGENTS, trigger_phrases=["dotnet endpoint controller"])
+    # Only "endpoint" matches out of 3 words → 33% < 60%
+    match = find_by_trigger("fix the endpoint timeout")
+    assert match is None
+
+
+def test_template_list_format_shows_name_clearly():
+    """Template name must appear standalone (not buried in bracket metadata)."""
+    from tools.templates import save_template, format_template_list, list_templates
+    save_template("my-template", SAMPLE_AGENTS, description="A nice description")
+    result = format_template_list(list_templates())
+    # Name must appear on its own (possibly with use count but not [global] right next to it)
+    lines = result.splitlines()
+    name_lines = [l for l in lines if "my-template" in l and "[global]" not in l]
+    assert len(name_lines) >= 1

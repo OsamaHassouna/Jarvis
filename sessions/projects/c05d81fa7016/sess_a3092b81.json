@@ -1,0 +1,43 @@
+{
+  "id": "sess_a3092b81",
+  "name": "Templates and Trigger Keywords",
+  "workspace_root": "d:\\Personal\\Jarvis",
+  "project_name": "Jarvis",
+  "is_global": false,
+  "created_at": "2026-02-27T23:54:36",
+  "updated_at": "2026-02-28T00:09:07",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hey jarvis how to use templates and what is templates anyway ?",
+      "ts": "2026-02-27T23:54:50"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey Osama! Great timing — you have 4 templates already set up in your Jarvis project. Let me explain everything.\n\n---\n\n## What Are Templates?\n\nTemplates are **pre-defined multi-agent blueprints** for common tasks. Instead of describing what to do every time, you trigger a template and Jarvis automatically spins up the right agents in the right order.\n\nEach template defines:\n| Field | What it does |\n|---|---|\n| `name` | Unique identifier |\n| `description` | What the template does |\n| `trigger_phrases` | Phrases that auto-activate the template |\n| `agents` | The agents to run, with dependency order |\n| `depends_on` | Which agents must finish before this one starts |\n\n---\n\n## Your 4 Global Templates\n\n### 1. `new-angular-feature`\nTrigger: *\"new angular component\"*, *\"add angular feature\"*, etc.\nRuns: **component → service** (parallel) → **routing** → **tests**\n\n### 2. `angular-auth-guard`\nTrigger: *\"add auth guard\"*, *\"angular authentication\"*, etc.\nRuns: **guard + interceptor** (parallel) → **login-page + tests**\n\n### 3. `dotnet-endpoint`\nTrigger: *\"new api endpoint\"*, *\"add dotnet endpoint\"*, etc.\nRuns: **dto** → **service + controller** → **tests**\n\n### 4. `dotnet-ef-migration`\nTrigger: *\"new database entity\"*, *\"add ef migration\"*, etc.\nRuns: **entity** → **dbcontext** → **repository + migration**\n\n---\n\n## How to Use Them\n\nJust say the trigger phrase naturally in chat:\n\n> *\"add auth guard to my project\"*\n> *\"new dotnet endpoint for user registration\"*\n> *\"add angular feature for the dashboard\"*\n\nJarvis detects the trigger phrase, loads the template, and runs all the agents in dependency order automatically.\n\n---\n\n## How to Create Your Own\n\nAdd a `.json` file to:\n- `templates/global/` — available in all projects\n- `templates/projects/<project-id>/` — only for that project\n\nFollow the same structure as the existing ones. The `depends_on` array controls execution order — empty array means \"run immediately in parallel.\"\n\n---\n\nWant me to create a new template for something specific, or explain how the trigger detection works under the hood?",
+      "ts": "2026-02-27T23:54:50"
+    },
+    {
+      "role": "user",
+      "content": "if i say it like this would it trigger too?\nCreate a login component for this project and use auth guard template to create the project auth guard",
+      "ts": "2026-02-28T00:05:21"
+    },
+    {
+      "role": "assistant",
+      "content": "Short answer: **yes and no** — it depends on how the trigger detection is implemented.\n\n---\n\n## What Your Message Would Trigger\n\nYour message was:\n> *\"Create a login component for this project and use auth guard template to create the project auth guard\"*\n\n### Template matching relies on **trigger phrases** in each template's JSON:\n\n**`angular-auth-guard`** triggers on:\n- `\"add angular auth\"`, `\"add auth guard\"`, `\"protect angular routes\"`, `\"angular authentication\"`\n\n**`new-angular-feature`** triggers on:\n- `\"new angular feature\"`, `\"new angular component\"`, `\"add angular feature\"`, `\"add angular component\"`\n\nYour message contains `\"auth guard\"` → ✅ **`angular-auth-guard` would likely trigger**\nYour message contains `\"create a login component\"` → ⚠️ **`new-angular-feature` probably won't** — because none of its trigger phrases match exactly.\n\n---\n\n## The Gap\n\nThe trigger system does **substring/fuzzy matching** on those predefined phrases. If your message doesn't include one of them closely enough, the template is skipped.\n\n**To guarantee both trigger**, you'd phrase it like:\n\n> *\"Add auth guard and new angular component for the login page\"*\n\nOr even more explicit:\n\n> *\"Use the **auth guard template** and **new angular feature template** to create login\"*\n\n---\n\n## Want to Improve This?\n\nI can add more trigger phrases to the templates — like `\"create a login component\"`, `\"add login page\"`, `\"use auth guard template\"` — so natural phrasing like yours always works. Want me to do that?",
+      "ts": "2026-02-28T00:05:21"
+    },
+    {
+      "role": "user",
+      "content": "I dont want to trigger templates with normal phrasing i want when i say use authguard template or something like \ncreate angular component for login using our templates\ni dont want to trigger the templates in random words like auth guard as may be iam asking about something in it. so what do you think is better ?",
+      "ts": "2026-02-28T00:09:07"
+    },
+    {
+      "role": "assistant",
+      "content": "Good thinking. Your concern is valid — keyword-based matching is too fragile and causes false positives.\n\n## My Recommendation: Explicit Intent Phrase\n\nThe cleanest approach is requiring a **specific intent prefix** rather than detecting template names in free text.\n\n### Best Options (pick one style):\n\n| Style | Example |\n|---|---|\n| `use template:` prefix | `use template: auth-guard` |\n| `run template:` prefix | `run template: new-angular-feature` |\n| `/template` command | `/template auth-guard` |\n| Natural but explicit | `\"apply the auth-guard template\"` (must include \"apply the\" + \"template\") |\n\n---\n\n## My Pick for You: `/template <name>`\n\nSince you already use slash commands (`/rules`, `/memory`), this fits perfectly:\n\n```\n/template auth-guard\n/template new-angular-feature\n/template dotnet-endpoint\n```\n\n**Why it's better:**\n- Zero false positives — it only triggers when you explicitly type `/template`\n- You can freely talk about auth guards, migrations, endpoints without triggering anything\n- Consistent with your existing command style\n- Easy to list available templates with just `/templates`\n\n---\n\n## How It Would Work\n\n- `/templates` → list all available templates\n- `/template auth-guard` → trigger the angular-auth-guard template\n- `/template auth-guard for the AdminModule` → trigger with extra context passed in\n\n---\n\nWant me to implement this? I'd update the template detection logic to only fire on the `/template` command and remove the fuzzy keyword matching.",
+      "ts": "2026-02-28T00:09:07"
+    }
+  ],
+  "summary": "",
+  "token_total": 18788
+}

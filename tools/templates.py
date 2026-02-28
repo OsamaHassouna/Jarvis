@@ -155,11 +155,57 @@ def increment_use_count(name: str, workspace_root: str = "") -> None:
         pass
 
 
+def rename_template(old_name: str, new_name: str, workspace_root: str = "") -> bool:
+    """
+    Rename a template. Creates a new file with the new name and deletes the old one.
+    Returns True if the old template was found and renamed, False otherwise.
+    """
+    t = get_template(old_name, workspace_root)
+    if not t:
+        return False
+    scope = t.pop("scope", "global")
+    actual_workspace = workspace_root if scope == "project" else ""
+    t["name"] = new_name
+    new_path = _template_path(new_name, actual_workspace)
+    with open(new_path, "w", encoding="utf-8") as f:
+        json.dump(t, f, indent=2)
+    old_path = _template_path(old_name, actual_workspace)
+    if os.path.exists(old_path):
+        os.remove(old_path)
+    return True
+
+
+def update_template_meta(name: str, workspace_root: str = "", **fields) -> bool:
+    """
+    Update metadata fields on a template (description, trigger_phrases).
+    Returns True if the template was found and updated, False otherwise.
+    """
+    t = get_template(name, workspace_root)
+    if not t:
+        return False
+    scope = t.pop("scope", "global")
+    actual_workspace = workspace_root if scope == "project" else ""
+    for key, val in fields.items():
+        if key in ("description", "trigger_phrases"):
+            t[key] = val
+    path = _template_path(name, actual_workspace)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(t, f, indent=2)
+    return True
+
+
 # ── Trigger phrase matching ───────────────────────────────────────────────────
+
+_TRIGGER_STOPWORDS = frozenset({"a", "an", "the", "of", "in", "for", "with", "and", "or"})
+_TRIGGER_KEYWORD_THRESHOLD = 0.6   # ≥ 60% of non-stopword words must appear
+
 
 def find_by_trigger(user_input: str, workspace_root: str = "") -> dict | None:
     """
-    Return the first template whose trigger phrase is found in user_input.
+    Return the first template whose trigger phrase matches user_input.
+    Two passes:
+      1. Exact substring match (fast, precise)
+      2. Keyword match: ≥60% of non-stopword words from the phrase appear in the message
     Project-scoped templates take priority over global.
     Returns None if no match.
     """
@@ -173,12 +219,29 @@ def find_by_trigger(user_input: str, workspace_root: str = "") -> dict | None:
         else:
             global_templates.append(t)
 
-    for t in project_templates + global_templates:
+    all_templates = project_templates + global_templates
+
+    # Pass 1: exact substring
+    for t in all_templates:
         for phrase in t.get("trigger_phrases", []):
             if phrase.lower() in lower:
                 return t
 
-    return None
+    # Pass 2: keyword match
+    best_match = None
+    best_score = 0.0
+    for t in all_templates:
+        for phrase in t.get("trigger_phrases", []):
+            words = [w for w in phrase.lower().split() if w not in _TRIGGER_STOPWORDS]
+            if len(words) < 2:
+                continue
+            hits = sum(1 for w in words if w in lower)
+            score = hits / len(words)
+            if score >= _TRIGGER_KEYWORD_THRESHOLD and score > best_score:
+                best_score = score
+                best_match = t
+
+    return best_match
 
 
 # ── Agent injection helpers ───────────────────────────────────────────────────
@@ -214,12 +277,21 @@ def format_template_list(templates: list) -> str:
     for t in templates:
         scope = "[project]" if t.get("scope") == "project" else "[global]"
         n_agents = len(t.get("agents", []))
-        desc = f" — {t['description']}" if t.get("description") else ""
         uses = t.get("use_count", 0)
         use_str = f"  (used {uses}x)" if uses else ""
-        lines.append(f"  • {t['name']} {scope}  {n_agents} agents{desc}{use_str}")
-    lines.append("\nRun:  `/template use <name>`")
-    lines.append("Info: `/template info <name>`")
+        desc = f"\n    {t['description']}" if t.get("description") else ""
+        lines.append(f"\n  {t['name']}{use_str}")
+        lines.append(f"    {scope} · {n_agents} agents{desc}")
+    lines.append(
+        "\nCommands:\n"
+        "  /template use <name>                           — run\n"
+        "  /template info <name>                          — show agents\n"
+        "  /template rename <old-name> <new-name>         — rename\n"
+        "  /template edit <name> description <text>       — edit description\n"
+        "  /template edit <name> triggers <p1>, <p2>      — edit trigger phrases\n"
+        "  /template save <name>                          — save last breakdown\n"
+        "  /template delete <name>                        — remove"
+    )
     return "\n".join(lines)
 
 
