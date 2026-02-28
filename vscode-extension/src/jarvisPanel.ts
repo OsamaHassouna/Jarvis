@@ -240,7 +240,7 @@ export class JarvisPanel {
         } else if (editor && editor.document.uri.scheme === 'file') {
             name = path.basename(path.dirname(editor.document.uri.fsPath));
         }
-        this._post('workspaceInfo', name);
+        this._post('workspaceInfo', name, { rootPath: this._getWorkspaceRoot() });
     }
 
     private async _restoreActiveSession(): Promise<void> {
@@ -888,6 +888,22 @@ export class JarvisPanel {
   .ag-file:hover { opacity: 0.7; }
   .ag-created  { background: rgba(78,201,176,0.15); color: #4ec9b0; }
   .ag-modified { background: rgba(206,145,120,0.15); color: #ce9178; }
+  /* Phase 15: notification banners */
+  #notification-bar { display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
+  .notif-banner {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 7px 10px; border-radius: 5px; font-size: 11px; line-height: 1.4;
+    border-left: 3px solid;
+  }
+  .notif-info    { background: rgba(86,156,214,0.12); border-color: #569cd6; color: var(--vscode-foreground); }
+  .notif-warning { background: rgba(220,160,60,0.12); border-color: #dca03c; color: var(--vscode-foreground); }
+  .notif-icon  { flex-shrink: 0; font-size: 13px; }
+  .notif-text  { flex: 1; }
+  .notif-close {
+    flex-shrink: 0; background: none; border: none; cursor: pointer;
+    opacity: 0.5; font-size: 13px; line-height: 1; color: inherit; padding: 0;
+  }
+  .notif-close:hover { opacity: 1; }
   /* Phase 13: rating prompt */
   .agent-rate-prompt {
     padding: 6px 12px;
@@ -1163,6 +1179,9 @@ export class JarvisPanel {
   <div id="session-list-container"></div>
 </div>
 
+<!-- Phase 15: notification banners -->
+<div id="notification-bar"></div>
+
 <div id="messages">
   <div class="msg msg-system">
     Jarvis is connected to your local server.<br>
@@ -1256,6 +1275,15 @@ export class JarvisPanel {
   let sessionTotalTokens = 0;
   let sessionTotalCost = 0;
   let currentSessionId = '';
+  let _currentWorkspaceRoot = '';   // Phase 15: tracked for notification polling
+
+  function _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
 
   // ── Auto-resize textarea + toggle send button ──
   input.addEventListener('input', () => {
@@ -1831,6 +1859,7 @@ export class JarvisPanel {
     } else if (command === 'workspaceInfo') {
       const el = document.getElementById('workspace-name');
       if (el) el.textContent = text ? '\u2014 ' + text : '';
+      if (msg.rootPath) { _currentWorkspaceRoot = msg.rootPath; }
     } else if (command === 'startAutoChat') {
       // Extension auto-notifying Jarvis of a command result
       const succeeded = msg.success;
@@ -1948,6 +1977,50 @@ export class JarvisPanel {
       rateEl.textContent = job.rate_prompt;
     }
   }
+
+  // Phase 15: notification polling (every 30s)
+  async function _pollNotifications() {
+    try {
+      const ws = encodeURIComponent(_currentWorkspaceRoot || '');
+      const r = await fetch('http://localhost:3131/notifications?workspace_root=' + ws);
+      if (!r.ok) { return; }
+      const data = await r.json();
+      _renderNotifications(data.notifications || []);
+    } catch (_) {}
+  }
+
+  function _renderNotifications(notifications) {
+    const bar = document.getElementById('notification-bar');
+    if (!bar) { return; }
+    bar.innerHTML = '';
+    for (const n of notifications) {
+      const cls = n.severity === 'warning' ? 'notif-warning' : 'notif-info';
+      const icon = n.severity === 'warning' ? '⚠' : 'ℹ';
+      const div = document.createElement('div');
+      div.className = 'notif-banner ' + cls;
+      div.innerHTML =
+        '<span class="notif-icon">' + icon + '</span>' +
+        '<span class="notif-text">' + _esc(n.message) + '</span>' +
+        '<button class="notif-close" data-id="' + _esc(n.id) + '" title="Dismiss">✕</button>';
+      bar.appendChild(div);
+    }
+    bar.querySelectorAll('.notif-close').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-id');
+        try {
+          await fetch('http://localhost:3131/notifications/dismiss', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id }),
+          });
+          btn.closest('.notif-banner')?.remove();
+        } catch (_) {}
+      });
+    });
+  }
+
+  _pollNotifications();
+  setInterval(_pollNotifications, 30000);
 
   // Check server on load
   console.log('[Jarvis] webview script started, sending checkServer');

@@ -1,6 +1,6 @@
 # Jarvis — Full Roadmap & Vision
 **Last Updated:** February 2026
-**Current Status:** Phase 13 Complete ✅ | 247/247 tests passing
+**Current Status:** Phase 15 Complete ✅ | 265/265 tests passing
 
 ---
 
@@ -158,30 +158,18 @@ modes. Recommend implementing after Phase 12 (VS Code parity) gives better visib
 
 ---
 
-## Phase 15 — Proactive Assistant (Background Watcher)
-**Priority: LOW — after Phase 12**
+## Phase 15 — Proactive Assistant (Background Watcher) ✅ Complete
+
 **Goal:** Transform Jarvis from reactive (answers when asked) to proactive (notices things and surfaces them).
 
-### What to build:
-A background watcher process (`watcher.py`) that monitors active project directories and
-posts notifications to the VS Code panel or terminal:
+### What was built:
+- `tools/notifications.py` — thread-safe in-memory notification store (`add_notification`, `get_notifications`, `dismiss_notification`, `dismiss_all`)
+- `tools/watcher.py` — background daemon thread; 3 detectors (stale tests, long-running branch, many uncommitted); no external deps; `_notified_keys` prevents duplicates
+- `server.py` — `/notifications` GET + `/notifications/dismiss` POST; `start_watcher()` on startup; `register_workspace()` per chat request
+- `jarvisPanel.ts` — dismissible notification banners above chat; polls `/notifications` every 30s; blue for info, orange for warning
+- **18 tests** — all passing
 
-**Pattern detection examples:**
-- Build failures: "You've run `dotnet build` 6 times since last commit — want me to look at the error?"
-- Stale tests: "auth.service.ts was modified 3 days ago but auth.service.spec.ts hasn't changed"
-- Token spend summary: "This week: 12,400 tokens / $0.89 — 60% was on the login refactor"
-- Long-running branch: "You've been on feature/auth for 8 days with 14 uncommitted files"
-
-### Implementation plan:
-- `watcher.py` — uses `watchdog` library to monitor file changes
-- Writes events to a queue file read by `server.py`
-- VS Code panel polls `/notifications` endpoint every 30s
-- Notifications appear as dismissible banners above the chat
-
-**Estimated tests:** 6-8
-**Effort:** 2-3 sessions
-**Dependencies:** Requires VS Code panel to be running (`server.py` up)
-**Risk:** Can be noisy if detection patterns are too aggressive — needs tuning
+**See:** [phase15_plan.md](phase15_plan.md)
 
 ---
 
@@ -194,8 +182,8 @@ Given your stack (Angular + .NET, VS Code user) and current state:
 | 1 | ~~**Phase 11** (templates)~~ | ✅ Done | — |
 | 2 | ~~**Phase 12** (VS Code parity)~~ | ✅ Done | — |
 | 3 | ~~**Phase 13** (learning)~~ | ✅ Done | — |
-| 4 | **Phase 14** (multi-project) | Only needed for large multi-repo work | 2-3 sessions |
-| 5 | **Phase 15** (proactive watcher) | Cool but lower urgency | 2-3 sessions |
+| 4 | ~~**Phase 15** (proactive watcher)~~ | ✅ Done | — |
+| 5 | **Phase 14** (multi-project) | Only needed for large multi-repo work | 2-3 sessions |
 
 ---
 
@@ -263,12 +251,13 @@ You (terminal, VS Code, any machine)
 | Phase 11 | 34 | ✅ All passing (20 original + 14 post-P12 fixes) |
 | Phase 12 | 20 | ✅ All passing |
 | Phase 13 | 18 | ✅ All passing |
-| **Total** | **247 passing** | |
+| Phase 15 | 18 | ✅ All passing |
+| **Total** | **265 passing** | |
 
 ---
 
 ## Phase docs
-[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md) · [phase12](phase12_plan.md) · [phase13](phase13_plan.md)
+[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md) · [phase12](phase12_plan.md) · [phase13](phase13_plan.md) · [phase15](phase15_plan.md)
 
 ## How to continue in a new session
 Start with: `docs/roadmap.md` + the relevant phase doc + specific files.

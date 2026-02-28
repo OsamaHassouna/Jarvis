@@ -68,7 +68,7 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         qs     = parse_qs(parsed.query)
 
         if path == "/status":
-            self._send_json(200, {"status": "running", "version": "phase12"})
+            self._send_json(200, {"status": "running", "version": "phase15"})
 
         elif path == "/briefing":
             self._send_json(200, {"briefing": process_briefing()})
@@ -98,6 +98,12 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 return
             set_active_session(session_id, workspace_root, is_global)
             self._send_json(200, {"session": sess})
+
+        elif path == "/notifications":
+            # Phase 15 — return pending notifications for this workspace
+            workspace_root = unquote(qs.get("workspace_root", [""])[0])
+            from tools.notifications import get_notifications
+            self._send_json(200, {"notifications": get_notifications(workspace_root)})
 
         elif path == "/agents/status":
             # Phase 12 — poll for agent job progress
@@ -130,6 +136,14 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     return
 
                 print(f"\n[VS Code] {message[:80]}")
+                # Phase 15: register workspace with watcher on every chat interaction
+                _ws = body.get("workspace_root", "")
+                if _ws:
+                    try:
+                        from tools.watcher import register_workspace
+                        register_workspace(_ws)
+                    except Exception:
+                        pass
                 response = process_for_vscode(
                     message=message,
                     file_path=body.get("file_path", ""),
@@ -287,6 +301,24 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
 
+        elif self.path == "/notifications/dismiss":
+            # Phase 15 — dismiss a notification by id or dismiss all for workspace
+            try:
+                body = self._read_body()
+                from tools.notifications import dismiss_notification, dismiss_all
+                notif_id = body.get("id", "")
+                if notif_id:
+                    dismissed = dismiss_notification(notif_id)
+                    self._send_json(200, {"dismissed": dismissed})
+                else:
+                    workspace_root = body.get("workspace_root", "")
+                    count = dismiss_all(workspace_root)
+                    self._send_json(200, {"dismissed": count})
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
         else:
             self._send_json(404, {"error": "Not found"})
 
@@ -299,6 +331,12 @@ def start_server(port: int = None, block: bool = True) -> HTTPServer:
     """
     port = port or SERVER_PORT
     server = JarvisHTTPServer(("localhost", port), JarvisHTTPHandler)
+    # Phase 15: start background watcher (daemon thread — safe to skip in tests)
+    try:
+        from tools.watcher import start_watcher
+        start_watcher()
+    except Exception:
+        pass
     print(f"\nJarvis server running on http://localhost:{port}")
     print("   Connect from VS Code (Ctrl+Shift+J) to open the panel.")
     print("   Press Ctrl+C to stop.\n")
