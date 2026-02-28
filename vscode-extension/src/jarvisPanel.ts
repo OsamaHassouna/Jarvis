@@ -1,6 +1,6 @@
 // jarvisPanel.ts
-// Phase 4/7/8/10 — VS Code Webview panel with Jarvis chat UI.
-// Phase 10 adds: per-session persistence, session history drawer, new session button.
+// Phase UX — WebviewViewProvider (sidebar), navigable sessions page, + spinner,
+//             +▾ dropdown, jump-to-bottom button, empty-session cleanup.
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -14,13 +14,11 @@ const JARVIS_SERVER = 'http://localhost:3131';
  */
 function _isMeaningfulCommand(cmd: string): boolean {
     const c = cmd.trim().toLowerCase();
-    // Trivial: listing / printing / navigation — only useful if they fail
     const trivialPrefixes = ['dir ', 'dir\r', 'dir\n', 'ls ', 'ls\r', 'ls\n',
         'echo ', 'type ', 'cat ', 'pwd', 'cd ', 'clear', 'cls'];
     const trivialExact = ['dir', 'ls', 'pwd', 'clear', 'cls'];
     if (trivialExact.includes(c)) { return false; }
     if (trivialPrefixes.some(p => c.startsWith(p))) { return false; }
-    // Meaningful: anything involving build, test, install, git, package managers, etc.
     return true;
 }
 
@@ -29,10 +27,11 @@ let _outputChannel: vscode.OutputChannel | undefined;
 export function setOutputChannel(ch: vscode.OutputChannel): void { _outputChannel = ch; }
 function dbg(msg: string): void { _outputChannel?.appendLine('[JarvisPanel] ' + msg); }
 
-export class JarvisPanel {
-    public static currentPanel: JarvisPanel | undefined;
+export class JarvisViewProvider implements vscode.WebviewViewProvider {
+    public static readonly viewType = 'jarvis.view';
+    private static _instance: JarvisViewProvider | undefined;
 
-    private readonly _panel: vscode.WebviewPanel;
+    private _view?: vscode.WebviewView;
     private _disposables: vscode.Disposable[] = [];
     // Tracks the last real text editor even while the webview has focus
     private _lastKnownEditor: vscode.TextEditor | undefined = vscode.window.activeTextEditor;
@@ -43,80 +42,67 @@ export class JarvisPanel {
     private _sessionRestored: boolean = false;
 
     // Phase 12: agent job polling
-    private _agentJobId: string = '';
     private _agentPollTimer: ReturnType<typeof setInterval> | undefined;
 
-    // ── Static factory ──────────────────────────────────────────────────────
-
-    public static createOrShow(extensionUri: vscode.Uri): void {
-        // Reuse existing panel if open
-        if (JarvisPanel.currentPanel) {
-            JarvisPanel.currentPanel._panel.reveal(vscode.ViewColumn.Beside);
-            return;
-        }
-        const panel = vscode.window.createWebviewPanel(
-            'jarvis',
-            'Jarvis',
-            vscode.ViewColumn.Beside,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [extensionUri]
-            }
-        );
-        JarvisPanel.currentPanel = new JarvisPanel(panel, extensionUri);
-    }
-
-    public static prefillInput(text: string): void {
-        JarvisPanel.currentPanel?._panel.webview.postMessage({
-            command: 'prefill',
-            text
-        });
-    }
-
-    // ── Constructor ──────────────────────────────────────────────────────────
-
-    private constructor(panel: vscode.WebviewPanel, _extensionUri: vscode.Uri) {
-        this._panel = panel;
-        this._panel.webview.html = this._getHtml();
-
-        // Keep _lastKnownEditor updated — activeTextEditor becomes undefined when webview gets focus
+    constructor(private readonly _extensionUri: vscode.Uri) {
+        JarvisViewProvider._instance = this;
         vscode.window.onDidChangeActiveTextEditor(editor => {
             if (editor) { this._lastKnownEditor = editor; }
         }, null, this._disposables);
+    }
 
-        // Handle messages from the webview
-        this._panel.webview.onDidReceiveMessage(
-            async (msg) => {
-                if (msg.command === 'send') {
-                    await this._handleSend(msg.text, msg.attachment);
-                } else if (msg.command === 'checkServer') {
-                    await this._checkServer();
-                } else if (msg.command === 'applyCode') {
-                    await this._applyCode(msg.code);
-                } else if (msg.command === 'runCommand') {
-                    await this._runCommand(msg.command_str, msg.working_dir, msg.card_id,
-                        this._currentSessionId, this._currentIsGlobal);
-                } else if (msg.command === 'newSession') {
-                    await this._newSession(msg.isGlobal ?? false);
-                } else if (msg.command === 'openSessionDrawer') {
-                    await this._loadAllSessions();
-                } else if (msg.command === 'loadSession') {
-                    await this._loadSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
-                } else if (msg.command === 'openFile') {
-                    try {
-                        const uri = vscode.Uri.file(msg.path);
-                        const doc = await vscode.workspace.openTextDocument(uri);
-                        await vscode.window.showTextDocument(doc);
-                    } catch { /* file may not exist yet */ }
-                }
-            },
-            null,
-            this._disposables
-        );
+    public static prefillInput(text: string): void {
+        JarvisViewProvider._instance?._view?.webview.postMessage({ command: 'prefill', text });
+    }
 
-        // Clean up on close
-        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+    // ── WebviewViewProvider ──────────────────────────────────────────────────
+
+    public resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken
+    ): void {
+        this._view = webviewView;
+
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this._extensionUri]
+        };
+
+        webviewView.webview.html = this._getHtml();
+
+        webviewView.webview.onDidReceiveMessage(async (msg) => {
+            if (msg.command === 'send') {
+                await this._handleSend(msg.text, msg.attachment);
+            } else if (msg.command === 'checkServer') {
+                await this._checkServer();
+            } else if (msg.command === 'applyCode') {
+                await this._applyCode(msg.code);
+            } else if (msg.command === 'runCommand') {
+                await this._runCommand(msg.command_str, msg.working_dir, msg.card_id,
+                    this._currentSessionId, this._currentIsGlobal);
+            } else if (msg.command === 'newSession') {
+                await this._newSession(msg.isGlobal ?? false);
+            } else if (msg.command === 'openSessionDrawer') {
+                await this._loadAllSessions();
+            } else if (msg.command === 'loadSession') {
+                await this._loadSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+            } else if (msg.command === 'deleteSession') {
+                await this._deleteSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+            } else if (msg.command === 'openFile') {
+                try {
+                    const uri = vscode.Uri.file(msg.path);
+                    const doc = await vscode.workspace.openTextDocument(uri);
+                    await vscode.window.showTextDocument(doc);
+                } catch { /* file may not exist yet */ }
+            }
+        }, null, this._disposables);
+
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this._postWorkspaceInfo();
+            }
+        }, null, this._disposables);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -157,12 +143,10 @@ export class JarvisPanel {
                     file_content: fileContent,
                     selection,
                     workspace_root: workspaceRoot,
-                    // Phase 7: attachment fields
                     attachment_name: attachment?.name ?? '',
                     attachment_text: (attachment && !attachment.isImage ? attachment.contentText : '') ?? '',
                     attachment_image_base64: (attachment?.isImage ? attachment.base64 : '') ?? '',
                     attachment_image_type: (attachment?.isImage ? attachment.mimeType : '') ?? '',
-                    // Phase 10: session fields
                     session_id: this._currentSessionId,
                     is_global: this._currentIsGlobal,
                 })
@@ -181,14 +165,12 @@ export class JarvisPanel {
                 commands_to_run?: { command: string; working_dir: string; reason: string }[];
                 session_id?: string;
                 session_name?: string;
-                agent_job_id?: string;   // Phase 12: complex task started as background job
+                agent_job_id?: string;
             };
 
             if (data.session_id) { this._currentSessionId = data.session_id; }
 
-            // Phase 12: complex task — start polling instead of showing a text response
             if (data.agent_job_id) {
-                this._agentJobId = data.agent_job_id;
                 this._post('agentJobStarted', '', { job_id: data.agent_job_id });
                 this._startAgentPolling(data.agent_job_id);
                 return;
@@ -218,7 +200,7 @@ export class JarvisPanel {
             const res = await fetch(`${JARVIS_SERVER}/status`);
             const data = await res.json() as { status: string };
             const isOnline = data.status === 'running';
-            dbg('server status: ' + (isOnline ? 'online' : 'offline') + ' (data.status=' + data.status + ')');
+            dbg('server status: ' + (isOnline ? 'online' : 'offline'));
             this._post('serverStatus', isOnline ? 'online' : 'offline');
             if (isOnline && !this._sessionRestored) {
                 this._sessionRestored = true;
@@ -269,13 +251,16 @@ export class JarvisPanel {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ workspace_root: workspaceRoot, is_global: isGlobal }),
             });
-            if (!res.ok) { return; }
+            if (!res.ok) {
+                this._post('newSessionFailed', '');
+                return;
+            }
             const data = await res.json() as { session: Record<string, unknown> };
             this._currentSessionId = data.session['id'] as string;
             this._currentIsGlobal = isGlobal;
             this._post('sessionCreated', '', { session: data.session });
         } catch {
-            // best-effort
+            this._post('newSessionFailed', '');
         }
     }
 
@@ -299,6 +284,18 @@ export class JarvisPanel {
             if (!res.ok) { return; }
             const data = await res.json() as Record<string, unknown>;
             this._post('sessionsListLoaded', '', { sessionsData: data });
+        } catch {
+            // best-effort
+        }
+    }
+
+    private async _deleteSession(sessionId: string, workspaceRoot: string, isGlobal: boolean): Promise<void> {
+        try {
+            await fetch(`${JARVIS_SERVER}/sessions/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, workspace_root: workspaceRoot, is_global: isGlobal }),
+            });
         } catch {
             // best-effort
         }
@@ -340,10 +337,6 @@ export class JarvisPanel {
             const data = await res.json() as { success: boolean; output: string };
             this._post('commandResult', '', { card_id, success: data.success, output: data.output });
 
-            // Auto-notify Jarvis only when it's useful:
-            //   - always on failure
-            //   - on success only for meaningful commands (build/test/install/git/etc.)
-            //   - skip trivial listing/navigation commands (dir, ls, echo, cd, type, cat)
             const shouldNotify = !data.success || _isMeaningfulCommand(command_str);
             if (shouldNotify) {
                 const status = data.success ? 'succeeded' : 'FAILED';
@@ -372,7 +365,6 @@ export class JarvisPanel {
                 if (status === 'done' || status === 'failed') {
                     clearInterval(this._agentPollTimer!);
                     this._agentPollTimer = undefined;
-                    this._agentJobId = '';
                     this._post('agentJobDone', '', { job });
                 }
             } catch { /* transient error — keep polling */ }
@@ -380,14 +372,13 @@ export class JarvisPanel {
     }
 
     private _post(command: string, text: string, extra?: Record<string, unknown>): void {
-        this._panel.webview.postMessage({ command, text, ...extra });
+        this._view?.webview.postMessage({ command, text, ...extra });
     }
 
     // ── Cleanup ──────────────────────────────────────────────────────────────
 
     public dispose(): void {
-        JarvisPanel.currentPanel = undefined;
-        this._panel.dispose();
+        JarvisViewProvider._instance = undefined;
         this._disposables.forEach(d => d.dispose());
         this._disposables = [];
     }
@@ -407,7 +398,7 @@ export class JarvisPanel {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
-  html { height: 100%; overflow: hidden; }
+  html, body { height: 100%; overflow: hidden; }
 
   body {
     font-family: var(--vscode-font-family);
@@ -420,7 +411,21 @@ export class JarvisPanel {
     overflow: hidden;
   }
 
-  /* ── Header ── */
+  /* ── View containers ── */
+  #chat-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+  #sessions-view {
+    display: none;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* ── Header (chat view) ── */
   #header {
     padding: 8px 12px;
     background: var(--vscode-sideBarSectionHeader-background);
@@ -438,7 +443,9 @@ export class JarvisPanel {
     border-radius: 50%;
     background: #888;
     flex-shrink: 0;
+    cursor: pointer;
   }
+  #status-dot:hover { opacity: 0.7; }
   #status-dot.online  { background: #4ec9b0; }
   #status-dot.offline { background: #f48771; }
 
@@ -503,70 +510,115 @@ export class JarvisPanel {
     height: 20px;
     line-height: 1;
     flex-shrink: 0;
-    transition: background 0.1s, color 0.1s;
+    transition: background 0.1s, color 0.1s, opacity 0.15s;
     padding: 0;
   }
   .hdr-btn:hover {
     background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
     color: var(--vscode-editor-foreground);
   }
+  .hdr-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
-  /* ── Session history drawer ── */
-  #session-drawer {
-    display: none;
-    flex-direction: column;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    background: var(--vscode-sideBar-background);
-    flex-shrink: 0;
-  }
-  #session-drawer.open { display: flex; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin-anim { display: inline-block; animation: spin 0.7s linear infinite; }
 
-  #session-drawer-header {
+  /* ── Sessions view header ── */
+  #sessions-header {
+    padding: 8px 12px;
+    background: var(--vscode-sideBarSectionHeader-background);
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 12px;
-    font-size: 11px;
-    font-weight: 600;
+    gap: 8px;
+    font-weight: bold;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--vscode-descriptionForeground);
-    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
     flex-shrink: 0;
   }
-  #session-drawer-header label {
+  #back-btn {
     display: flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground);
+    font-size: 14px;
+    font-weight: normal;
+    width: 22px;
+    height: 20px;
+    flex-shrink: 0;
+    transition: background 0.1s, color 0.1s;
+    padding: 0;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  #back-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
+    color: var(--vscode-editor-foreground);
+  }
+  #sessions-header-right {
+    margin-left: auto;
+    position: relative;
+    flex-shrink: 0;
+  }
+  #new-sess-dropdown-btn {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
     font-weight: normal;
     text-transform: none;
     letter-spacing: 0;
-    cursor: pointer;
-    margin-left: auto;
-    font-size: 11px;
+    padding: 2px 7px;
+    height: 22px;
+    transition: background 0.1s, color 0.1s;
   }
-  #drawer-new-btn, #drawer-close-btn {
-    background: none;
-    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
-    border-radius: 4px;
-    color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-    font-size: 11px;
-    padding: 1px 7px;
-    height: 20px;
-    line-height: 1;
-  }
-  #drawer-new-btn:hover, #drawer-close-btn:hover {
-    color: var(--vscode-editor-foreground);
+  #new-sess-dropdown-btn:hover {
     background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15));
+    color: var(--vscode-editor-foreground);
   }
-  #session-list-container {
-    max-height: 230px;
+  #new-sess-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    border-radius: 7px;
+    padding: 4px;
+    min-width: 160px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    z-index: 200;
+  }
+  #new-sess-dropdown.open { display: block; }
+  .ns-opt {
+    padding: 7px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--vscode-editor-foreground);
+  }
+  .ns-opt:hover { background: var(--vscode-list-hoverBackground); }
+
+  /* ── Sessions list ── */
+  #sessions-list-container {
+    flex: 1;
     overflow-y: auto;
     padding: 4px 0;
+    min-height: 0;
   }
   .session-group-label {
-    padding: 5px 12px 2px;
+    padding: 8px 12px 3px;
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.07em;
@@ -575,17 +627,24 @@ export class JarvisPanel {
     font-weight: 600;
   }
   .session-item {
-    padding: 5px 12px 5px 14px;
+    padding: 6px 12px 6px 14px;
     cursor: pointer;
     border-left: 2px solid transparent;
     display: flex;
-    flex-direction: column;
-    gap: 1px;
+    align-items: center;
+    gap: 8px;
   }
   .session-item:hover { background: var(--vscode-list-hoverBackground); }
   .session-item.active {
     border-left-color: #4ec9b0;
     background: rgba(78,201,176,0.08);
+  }
+  .session-item-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
   .session-item-name {
     font-size: 12px;
@@ -599,7 +658,15 @@ export class JarvisPanel {
     opacity: 0.45;
   }
 
-  /* ── Messages ── */
+  /* ── Messages area ── */
+  #messages-wrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
   #messages {
     flex: 1;
     overflow-y: auto;
@@ -609,6 +676,28 @@ export class JarvisPanel {
     gap: 10px;
     min-height: 0;
   }
+
+  /* ── Jump-to-bottom button ── */
+  #jump-btn {
+    display: none;
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    transition: opacity 0.15s;
+    z-index: 10;
+  }
+  #jump-btn:hover { opacity: 0.8; }
 
   .msg {
     max-width: 100%;
@@ -625,7 +714,6 @@ export class JarvisPanel {
     padding: 8px 10px;
     font-size: 13px;
   }
-  /* Jarvis messages: no background bubble — Claude Code style */
   .msg-jarvis {
     background: none;
     border-left: 2px solid rgba(78,201,176,0.4);
@@ -714,7 +802,7 @@ export class JarvisPanel {
   }
   .md-pre code { display: block; white-space: pre; }
 
-  /* ── Tool card (file write, read, etc.) ── */
+  /* ── Tool card (file write) ── */
   .tool-card {
     border: 1px solid rgba(128,128,128,0.2);
     border-left: 3px solid rgba(128,128,128,0.35);
@@ -754,7 +842,7 @@ export class JarvisPanel {
   }
   .tool-open-btn:hover { background: rgba(128,128,128,0.12); }
 
-  /* ── Thinking indicator → transforms into token summary ── */
+  /* ── Thinking indicator → token summary ── */
   .msg-thinking {
     display: flex;
     align-items: center;
@@ -781,7 +869,6 @@ export class JarvisPanel {
     font-size: 11px;
   }
 
-  /* ── Token summary (what the thinking bubble transforms into) ── */
   .msg-token-summary {
     display: flex;
     align-items: center;
@@ -792,11 +879,7 @@ export class JarvisPanel {
     padding: 2px 10px 4px;
     font-family: var(--vscode-editor-font-family, monospace);
   }
-  .ts-dot {
-    color: #4ec9b0;
-    font-size: 8px;
-    flex-shrink: 0;
-  }
+  .ts-dot { color: #4ec9b0; font-size: 8px; flex-shrink: 0; }
 
   /* ── Attachment chip ── */
   #attachment-bar {
@@ -830,7 +913,7 @@ export class JarvisPanel {
   }
   #clear-attach:hover { color: var(--vscode-editor-foreground); }
 
-  /* ── Terminal command approval card (Claude Code–style permission UI) ── */
+  /* ── Terminal command card ── */
   .cmd-card {
     border: 1px solid rgba(78,201,176,0.35);
     border-left: 3px solid #4ec9b0;
@@ -839,6 +922,7 @@ export class JarvisPanel {
     font-size: 12px;
     margin: 2px 0;
   }
+
   /* ── Phase 12: Agent panel ── */
   .agent-panel {
     border: 1px solid rgba(100,150,255,0.35);
@@ -888,6 +972,7 @@ export class JarvisPanel {
   .ag-file:hover { opacity: 0.7; }
   .ag-created  { background: rgba(78,201,176,0.15); color: #4ec9b0; }
   .ag-modified { background: rgba(206,145,120,0.15); color: #ce9178; }
+
   /* Phase 15: notification banners */
   #notification-bar { display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
   .notif-banner {
@@ -904,6 +989,7 @@ export class JarvisPanel {
     opacity: 0.5; font-size: 13px; line-height: 1; color: inherit; padding: 0;
   }
   .notif-close:hover { opacity: 1; }
+
   /* Phase 13: rating prompt */
   .agent-rate-prompt {
     padding: 6px 12px;
@@ -912,13 +998,12 @@ export class JarvisPanel {
     border-top: 1px solid rgba(128,128,128,0.15);
     font-style: italic;
   }
-  /* status colours */
+
   .ag-running .ag-icon { color: #4ec9b0; animation: spin 1.4s linear infinite; }
   .ag-success .ag-icon { color: #4ec9b0; }
   .ag-failed  .ag-icon { color: #f48771; }
   .ag-skip    .ag-icon { color: #808080; }
   .ag-waiting .ag-icon { color: #808080; }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
   .cmd-card-header {
     padding: 8px 12px 0 12px;
@@ -926,11 +1011,7 @@ export class JarvisPanel {
     align-items: center;
     gap: 7px;
   }
-  .cmd-card-icon {
-    font-size: 13px;
-    flex-shrink: 0;
-    line-height: 1;
-  }
+  .cmd-card-icon { font-size: 13px; flex-shrink: 0; line-height: 1; }
   .cmd-card-label {
     font-weight: 600;
     font-size: 11px;
@@ -939,9 +1020,7 @@ export class JarvisPanel {
     text-transform: uppercase;
     flex-shrink: 0;
   }
-  .cmd-card-body {
-    padding: 6px 12px 10px 12px;
-  }
+  .cmd-card-body { padding: 6px 12px 10px 12px; }
   .cmd-card-code {
     display: block;
     font-family: var(--vscode-editor-font-family, monospace);
@@ -960,11 +1039,7 @@ export class JarvisPanel {
     margin-bottom: 8px;
     line-height: 1.4;
   }
-  .cmd-card-actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
+  .cmd-card-actions { display: flex; gap: 6px; align-items: center; }
   .cmd-run-btn {
     padding: 4px 14px;
     background: #4ec9b0;
@@ -1064,12 +1139,9 @@ export class JarvisPanel {
     color: var(--vscode-editor-foreground);
     font-family: var(--vscode-editor-font-family, monospace);
   }
-  .cmd-desc {
-    font-size: 10px;
-    color: var(--vscode-descriptionForeground);
-  }
+  .cmd-desc { font-size: 10px; color: var(--vscode-descriptionForeground); }
 
-  /* ── Input wrapper (bordered card) ── */
+  /* ── Input wrapper ── */
   #input-wrapper {
     border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.4));
     border-radius: 10px;
@@ -1077,9 +1149,7 @@ export class JarvisPanel {
     overflow: hidden;
     transition: border-color 0.15s;
   }
-  #input-wrapper:focus-within {
-    border-color: var(--vscode-focusBorder);
-  }
+  #input-wrapper:focus-within { border-color: var(--vscode-focusBorder); }
 
   #input {
     display: block;
@@ -1107,7 +1177,6 @@ export class JarvisPanel {
     border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
   }
 
-  /* Left icon buttons */
   .tool-btn {
     display: flex;
     align-items: center;
@@ -1134,7 +1203,6 @@ export class JarvisPanel {
     color: var(--vscode-editor-foreground);
   }
 
-  /* Send button — right side */
   #send {
     margin-left: auto;
     display: flex;
@@ -1156,97 +1224,103 @@ export class JarvisPanel {
 </head>
 <body>
 
-<div id="header">
-  <div id="status-dot"></div>
-  <span>Jarvis</span>
-  <span id="workspace-name"></span>
-  <span id="session-name"></span>
-  <div id="header-right">
-    <span id="session-tokens"></span>
-    <button class="hdr-btn" id="new-session-btn" title="New session">+</button>
-    <button class="hdr-btn" id="history-btn" title="Session history">&#x2630;</button>
-  </div>
-</div>
+<!-- ===== CHAT VIEW ===== -->
+<div id="chat-view">
 
-<!-- Session history drawer (hidden until history button clicked) -->
-<div id="session-drawer">
-  <div id="session-drawer-header">
-    <span>History</span>
-    <label><input type="checkbox" id="new-global-check"> Global</label>
-    <button id="drawer-new-btn">New</button>
-    <button id="drawer-close-btn">&#x2715;</button>
-  </div>
-  <div id="session-list-container"></div>
-</div>
-
-<!-- Phase 15: notification banners -->
-<div id="notification-bar"></div>
-
-<div id="messages">
-  <div class="msg msg-system">
-    Jarvis is connected to your local server.<br>
-    Your active file and workspace are included as context.
-  </div>
-</div>
-
-<!-- Attachment chip (shown when a file is staged) -->
-<div id="attachment-bar">
-  <span id="attachment-chip"></span>
-  <button id="clear-attach" title="Remove attachment">&#x2715;</button>
-</div>
-<input type="file" id="file-input" style="display:none" accept="*">
-
-<!-- Bottom input section -->
-<div id="input-outer">
-
-  <!-- Commands dropdown (slides up from toolbar) -->
-  <div id="cmd-menu">
-    <div class="cmd-item" data-cmd="/rules">
-      <span class="cmd-name">/rules</span>
-      <span class="cmd-desc">Manage global rules for all conversations</span>
-    </div>
-    <div class="cmd-item" data-cmd="/project rules">
-      <span class="cmd-name">/project rules</span>
-      <span class="cmd-desc">Manage rules for this project only</span>
-    </div>
-    <div class="cmd-item" data-cmd="/attach">
-      <span class="cmd-name">/attach</span>
-      <span class="cmd-desc">Attach a file or image to your message</span>
+  <div id="header">
+    <div id="status-dot" title="Click to reconnect"></div>
+    <span>Jarvis</span>
+    <span id="workspace-name"></span>
+    <span id="session-name"></span>
+    <div id="header-right">
+      <span id="session-tokens"></span>
+      <button class="hdr-btn" id="new-session-btn" title="New project session">+</button>
+      <button class="hdr-btn" id="history-btn" title="Sessions">&#x2630;</button>
     </div>
   </div>
 
-  <!-- Bordered input card -->
-  <div id="input-wrapper">
-    <textarea id="input" rows="1" placeholder="Ask Jarvis..."></textarea>
-    <div id="toolbar">
+  <!-- Phase 15: notification banners -->
+  <div id="notification-bar"></div>
 
-      <!-- Attach button (paperclip) -->
-      <button class="tool-btn" id="attach-btn" title="Attach file or image">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-        </svg>
-      </button>
+  <div id="messages-wrap">
+    <div id="messages">
+      <div class="msg msg-system">
+        Jarvis is connected to your local server.<br>
+        Your active file and workspace are included as context.
+      </div>
+    </div>
+    <button id="jump-btn" title="Jump to bottom">&#x2193;</button>
+  </div>
 
-      <!-- Commands button (/) -->
-      <button class="tool-btn" id="cmd-btn" title="Commands">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="4" y1="9" x2="20" y2="9"/>
-          <line x1="4" y1="15" x2="20" y2="15"/>
-          <line x1="10" y1="3" x2="8" y2="21"/>
-          <line x1="16" y1="3" x2="14" y2="21"/>
-        </svg>
-      </button>
+  <!-- Attachment chip -->
+  <div id="attachment-bar">
+    <span id="attachment-chip"></span>
+    <button id="clear-attach" title="Remove attachment">&#x2715;</button>
+  </div>
+  <input type="file" id="file-input" style="display:none" accept="*">
 
-      <!-- Send button (arrow) -->
-      <button id="send" title="Send (Enter)" disabled>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-        </svg>
-      </button>
+  <!-- Bottom input section -->
+  <div id="input-outer">
+    <div id="cmd-menu">
+      <div class="cmd-item" data-cmd="/rules">
+        <span class="cmd-name">/rules</span>
+        <span class="cmd-desc">Manage global rules for all conversations</span>
+      </div>
+      <div class="cmd-item" data-cmd="/project rules">
+        <span class="cmd-name">/project rules</span>
+        <span class="cmd-desc">Manage rules for this project only</span>
+      </div>
+      <div class="cmd-item" data-cmd="/attach">
+        <span class="cmd-name">/attach</span>
+        <span class="cmd-desc">Attach a file or image to your message</span>
+      </div>
+    </div>
 
+    <div id="input-wrapper">
+      <textarea id="input" rows="1" placeholder="Ask Jarvis..."></textarea>
+      <div id="toolbar">
+        <button class="tool-btn" id="attach-btn" title="Attach file or image">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+        <button class="tool-btn" id="cmd-btn" title="Commands">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="9" x2="20" y2="9"/>
+            <line x1="4" y1="15" x2="20" y2="15"/>
+            <line x1="10" y1="3" x2="8" y2="21"/>
+            <line x1="16" y1="3" x2="14" y2="21"/>
+          </svg>
+        </button>
+        <button id="send" title="Send (Enter)" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
-</div>
+
+</div><!-- end #chat-view -->
+
+<!-- ===== SESSIONS VIEW ===== -->
+<div id="sessions-view">
+
+  <div id="sessions-header">
+    <button id="back-btn" title="Back to chat">&#x2190;</button>
+    <span>Sessions</span>
+    <div id="sessions-header-right">
+      <button id="new-sess-dropdown-btn">+ &#x25BE;</button>
+      <div id="new-sess-dropdown">
+        <div class="ns-opt" data-global="false">Project Session</div>
+        <div class="ns-opt" data-global="true">Global Session</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sessions-list-container"></div>
+
+</div><!-- end #sessions-view -->
 
 <script>
   const vscode      = acquireVsCodeApi();
@@ -1261,13 +1335,15 @@ export class JarvisPanel {
   const attachBar   = document.getElementById('attachment-bar');
   const attachChip  = document.getElementById('attachment-chip');
   const clearAttach = document.getElementById('clear-attach');
-  const drawer      = document.getElementById('session-drawer');
-  const drawerList  = document.getElementById('session-list-container');
   const newSessBtn  = document.getElementById('new-session-btn');
   const histBtn     = document.getElementById('history-btn');
-  const drawerClose = document.getElementById('drawer-close-btn');
-  const drawerNew   = document.getElementById('drawer-new-btn');
-  const globalCheck = document.getElementById('new-global-check');
+  const jumpBtn     = document.getElementById('jump-btn');
+  const chatView    = document.getElementById('chat-view');
+  const sessView    = document.getElementById('sessions-view');
+  const backBtn     = document.getElementById('back-btn');
+  const sessList    = document.getElementById('sessions-list-container');
+  const newSessDDb  = document.getElementById('new-sess-dropdown-btn');
+  const newSessDd   = document.getElementById('new-sess-dropdown');
 
   let pendingAttachment = null;
   let isSending = false;
@@ -1275,7 +1351,7 @@ export class JarvisPanel {
   let sessionTotalTokens = 0;
   let sessionTotalCost = 0;
   let currentSessionId = '';
-  let _currentWorkspaceRoot = '';   // Phase 15: tracked for notification polling
+  let _currentWorkspaceRoot = '';
 
   function _esc(s) {
     return String(s)
@@ -1306,25 +1382,19 @@ export class JarvisPanel {
       const cost = sessionTotalCost >= 0.01
         ? '$' + sessionTotalCost.toFixed(2)
         : '$' + sessionTotalCost.toFixed(5).replace(/0+$/, '');
-      el.textContent = sessionTotalTokens.toLocaleString() + ' tok \u2022 ' + cost;
+      el.textContent = sessionTotalTokens.toLocaleString() + ' tok \\u2022 ' + cost;
     }
   }
 
   // ── Markdown renderer (no external deps) ────────────────────────────────
   function mdInline(raw) {
-    // 1. Extract inline code spans so they aren't processed further
-    // NOTE: all regex here use \\ (double-backslash) so the template literal
-    // produces a single \ in the HTML output, giving correct regex syntax.
     const codes = [];
     let s = raw.replace(/\x60([^\x60\\n]+)\x60/g, (_, c) => { codes.push(c); return '\x01' + (codes.length - 1) + '\x01'; });
-    // 2. Escape remaining HTML
     s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // 3. Inline transforms
     s = s.replace(/\\*\\*\\*(.+?)\\*\\*\\*/g, '<strong><em>$1</em></strong>');
     s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
     s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
     s = s.replace(/\\[([^\\]]*)]\\([^)]*\\)/g, '<span class="md-link">$1</span>');
-    // 4. Restore code spans
     s = s.replace(/\x01(\\d+)\x01/g, (_, i) => {
       const c = codes[+i].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       return '<code class="md-icode">' + c + '</code>';
@@ -1341,7 +1411,6 @@ export class JarvisPanel {
     while (i < lines.length) {
       const line = lines[i];
 
-      // Fenced code block
       const fence = line.match(/^\x60\x60\x60(\\w*)\\s*$/);
       if (fence) {
         closeList();
@@ -1349,7 +1418,7 @@ export class JarvisPanel {
         const codeLines = [];
         i++;
         while (i < lines.length && !lines[i].match(/^\x60\x60\x60\\s*$/)) { codeLines.push(lines[i]); i++; }
-        i++; // skip closing fence
+        i++;
         const codeRaw = codeLines.join('\\n');
         const codeEsc = codeRaw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         const dataCode = codeRaw.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
@@ -1368,7 +1437,6 @@ export class JarvisPanel {
         continue;
       }
 
-      // Headers
       const hm = line.match(/^(#{1,3}) (.+)/);
       if (hm) {
         closeList();
@@ -1377,7 +1445,6 @@ export class JarvisPanel {
         i++; continue;
       }
 
-      // Unordered list
       const ulm = line.match(/^[-*+] (.+)/);
       if (ulm) {
         if (listType !== 'ul') { closeList(); out.push('<ul class="md-ul">'); listType = 'ul'; }
@@ -1385,7 +1452,6 @@ export class JarvisPanel {
         i++; continue;
       }
 
-      // Ordered list
       const olm = line.match(/^\\d+\\. (.+)/);
       if (olm) {
         if (listType !== 'ol') { closeList(); out.push('<ol class="md-ol">'); listType = 'ol'; }
@@ -1395,13 +1461,8 @@ export class JarvisPanel {
 
       closeList();
 
-      // Horizontal rule
       if (line.match(/^---+\\s*$/)) { out.push('<div class="md-hr"></div>'); i++; continue; }
-
-      // Blank line
       if (!line.trim()) { out.push('<div class="md-gap"></div>'); i++; continue; }
-
-      // Paragraph
       out.push('<p class="md-p">' + mdInline(line) + '</p>');
       i++;
     }
@@ -1409,7 +1470,6 @@ export class JarvisPanel {
     return out.join('');
   }
 
-  // Copy code block content to clipboard
   function mdCopy(btn) {
     const block = btn.closest('.md-block');
     const code = block.getAttribute('data-code')
@@ -1421,7 +1481,6 @@ export class JarvisPanel {
     }).catch(() => {});
   }
 
-  // Apply code block to active file
   function mdApply(btn) {
     const block = btn.closest('.md-block');
     const code = block.getAttribute('data-code')
@@ -1436,7 +1495,7 @@ export class JarvisPanel {
     card.className = 'tool-card';
     card.innerHTML =
       '<div class="tool-card-hdr">' +
-        '<span class="tool-icon">✎</span>' +
+        '<span class="tool-icon">\\u270e</span>' +
         '<span class="tool-label">Wrote</span>' +
         '<span class="tool-path">' + name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' +
         '<button class="tool-open-btn">Open</button>' +
@@ -1445,7 +1504,7 @@ export class JarvisPanel {
       vscode.postMessage({ command: 'openFile', path: fullPath });
     });
     messages.appendChild(card);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom();
   }
 
   // ── Add message bubble ──
@@ -1458,9 +1517,22 @@ export class JarvisPanel {
       div.textContent = text;
     }
     messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom();
     return div;
   }
+
+  // ── Jump-to-bottom logic ──
+  function scrollToBottom() {
+    messages.scrollTop = messages.scrollHeight;
+    jumpBtn.style.display = 'none';
+  }
+
+  messages.addEventListener('scroll', () => {
+    const distFromBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+    jumpBtn.style.display = distFromBottom > 100 ? 'flex' : 'none';
+  });
+
+  jumpBtn.addEventListener('click', scrollToBottom);
 
   // ── Thinking indicator with live timer ──
   let thinkingEl = null;
@@ -1475,7 +1547,7 @@ export class JarvisPanel {
       '<span>Thinking&hellip;</span>' +
       '<span id="thinking-timer">0s</span>';
     messages.appendChild(thinkingEl);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom();
 
     const start = Date.now();
     timerInterval = setInterval(() => {
@@ -1510,9 +1582,9 @@ export class JarvisPanel {
       thinkingEl.className = 'msg-token-summary';
       thinkingEl.innerHTML =
         '<span class="ts-dot">&#9679;</span>' +
-        model + ' &bull; ' +
-        tokenData.total.toLocaleString() + ' tokens &bull; ' +
-        cost + ' &bull; ' + timeStr;
+        model + ' \\u2022 ' +
+        tokenData.total.toLocaleString() + ' tokens \\u2022 ' +
+        cost + ' \\u2022 ' + timeStr;
 
       sessionTotalTokens += tokenData.total;
       sessionTotalCost += tokenData.cost;
@@ -1565,13 +1637,15 @@ export class JarvisPanel {
 
   document.addEventListener('click', (e) => {
     if (!cmdMenu.contains(e.target) && e.target !== cmdBtn) closeCmdMenu();
+    if (!newSessDd.contains(e.target) && e.target !== newSessDDb) {
+      newSessDd.classList.remove('open');
+    }
   });
 
   // ── Attach button ──
   attachBtn.addEventListener('click', () => fileInput.click());
   clearAttach.addEventListener('click', hideChip);
 
-  // ── File selected ──
   fileInput.addEventListener('change', () => {
     const file = fileInput.files[0];
     if (!file) return;
@@ -1595,30 +1669,65 @@ export class JarvisPanel {
     reader.onerror = () => showChip('Error reading file');
   });
 
-  // ── Session drawer ──
-  function openDrawer() {
-    drawer.classList.add('open');
+  // ── Status dot click ──
+  dot?.addEventListener('click', () => {
+    vscode.postMessage({ command: 'checkServer' });
+  });
+
+  // ── + button (new project session) with spinner ──
+  newSessBtn.addEventListener('click', () => {
+    if (newSessBtn.disabled) return;
+    newSessBtn.disabled = true;
+    newSessBtn.innerHTML = '<span class="spin-anim">&#8635;</span>';
+    vscode.postMessage({ command: 'newSession', isGlobal: false });
+  });
+
+  function _resetNewSessBtn() {
+    newSessBtn.disabled = false;
+    newSessBtn.textContent = '+';
+  }
+
+  // ── History button → sessions view ──
+  histBtn.addEventListener('click', () => {
+    showSessionsView();
+  });
+
+  // ── Back button → chat view ──
+  backBtn.addEventListener('click', () => {
+    showChatView();
+  });
+
+  // ── Sessions view navigation ──
+  function showChatView() {
+    chatView.style.display = 'flex';
+    sessView.style.display = 'none';
+  }
+
+  function showSessionsView() {
+    chatView.style.display = 'none';
+    sessView.style.display = 'flex';
     vscode.postMessage({ command: 'openSessionDrawer' });
   }
-  function closeDrawer() {
-    drawer.classList.remove('open');
-  }
 
-  newSessBtn.addEventListener('click', () => {
-    vscode.postMessage({ command: 'newSession', isGlobal: globalCheck.checked });
+  // ── New session dropdown in sessions view ──
+  newSessDDb.addEventListener('click', (e) => {
+    e.stopPropagation();
+    newSessDd.classList.toggle('open');
   });
 
-  histBtn.addEventListener('click', () => {
-    drawer.classList.contains('open') ? closeDrawer() : openDrawer();
+  document.querySelectorAll('.ns-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      const isGlobal = opt.dataset.global === 'true';
+      newSessDd.classList.remove('open');
+      showChatView();
+      // Disable + button while creating
+      newSessBtn.disabled = true;
+      newSessBtn.innerHTML = '<span class="spin-anim">&#8635;</span>';
+      vscode.postMessage({ command: 'newSession', isGlobal });
+    });
   });
 
-  drawerClose.addEventListener('click', closeDrawer);
-
-  drawerNew.addEventListener('click', () => {
-    closeDrawer();
-    vscode.postMessage({ command: 'newSession', isGlobal: globalCheck.checked });
-  });
-
+  // ── Sessions list helpers ──
   function formatRelativeTime(isoStr) {
     if (!isoStr) return '';
     try {
@@ -1638,16 +1747,37 @@ export class JarvisPanel {
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function populateDrawer(data) {
-    drawerList.innerHTML = '';
+  function populateSessionsList(data) {
+    sessList.innerHTML = '';
+
+    // Collect all sessions for cleanup check
+    const toDelete = [];
+
+    function _addSessions(sessions, wsRoot, isGlobal) {
+      sessions.forEach(s => {
+        const msgCount = (s.messages || []).length;
+        // Auto-delete empty sessions older than 5 min (and not the active one)
+        if (msgCount === 0 && s.id !== currentSessionId) {
+          const updatedAt = s.updated_at || s.created_at || '';
+          if (updatedAt) {
+            const ageMin = (Date.now() - new Date(updatedAt + 'Z').getTime()) / 60000;
+            if (ageMin > 5) {
+              toDelete.push({ sessionId: s.id, workspaceRoot: wsRoot || s.workspace_root || '', isGlobal });
+              return; // skip rendering
+            }
+          }
+        }
+        sessList.appendChild(createSessionItem(s, wsRoot, isGlobal));
+      });
+    }
 
     const globals = (data.global || []);
     if (globals.length > 0) {
       const lbl = document.createElement('div');
       lbl.className = 'session-group-label';
       lbl.textContent = 'Global';
-      drawerList.appendChild(lbl);
-      globals.forEach(s => drawerList.appendChild(createSessionItem(s, '', true)));
+      sessList.appendChild(lbl);
+      _addSessions(globals, '', true);
     }
 
     const projects = data.projects || {};
@@ -1655,27 +1785,46 @@ export class JarvisPanel {
       const lbl = document.createElement('div');
       lbl.className = 'session-group-label';
       lbl.textContent = proj.project_name || wsRoot.split(/[\\\\/]/).pop() || wsRoot;
-      drawerList.appendChild(lbl);
-      (proj.sessions || []).forEach(s => drawerList.appendChild(createSessionItem(s, wsRoot, false)));
+      sessList.appendChild(lbl);
+      _addSessions(proj.sessions || [], wsRoot, false);
     });
 
-    if (drawerList.children.length === 0) {
-      drawerList.innerHTML = '<div style="padding:12px;font-size:11px;opacity:0.5;text-align:center">No sessions yet</div>';
+    // Remove empty session group labels that have no children
+    sessList.querySelectorAll('.session-group-label').forEach(lbl => {
+      let next = lbl.nextElementSibling;
+      if (!next || next.classList.contains('session-group-label')) {
+        lbl.remove();
+      }
+    });
+
+    if (sessList.querySelectorAll('.session-item').length === 0) {
+      sessList.innerHTML = '<div style="padding:16px;font-size:11px;opacity:0.5;text-align:center">No sessions yet</div>';
     }
+
+    // Delete empty sessions silently
+    toDelete.forEach(d => {
+      vscode.postMessage({ command: 'deleteSession', sessionId: d.sessionId, workspaceRoot: d.workspaceRoot, isGlobal: d.isGlobal });
+    });
   }
 
   function createSessionItem(sess, workspaceRoot, isGlobal) {
     const item = document.createElement('div');
     item.className = 'session-item' + (sess.id === currentSessionId ? ' active' : '');
+
+    const msgCount = (sess.messages || []).length;
+    const timeStr = formatRelativeTime(sess.updated_at);
+    const subLine = [msgCount > 0 ? msgCount + ' msg' + (msgCount !== 1 ? 's' : '') : 'empty', timeStr].filter(Boolean).join(' \u00b7 ');
+
     item.innerHTML =
-      '<div class="session-item-name">' + escHtml(sess.name || '(untitled)') + '</div>' +
-      '<div class="session-item-time">' + formatRelativeTime(sess.updated_at) + '</div>';
+      '<div class="session-item-info">' +
+        '<div class="session-item-name">' + escHtml(sess.name || '(untitled)') + '</div>' +
+        '<div class="session-item-time">' + escHtml(subLine) + '</div>' +
+      '</div>';
+
     item.addEventListener('click', () => {
-      closeDrawer();
-      // Prefer the session's own workspace_root — the group key may be empty
-      // when _summary.json hasn't been written yet (session never explicitly closed).
       const effectiveWsRoot = sess.workspace_root || workspaceRoot;
       vscode.postMessage({ command: 'loadSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
+      showChatView();
     });
     return item;
   }
@@ -1685,6 +1834,7 @@ export class JarvisPanel {
     sessionTotalTokens = 0;
     sessionTotalCost = 0;
     document.getElementById('session-tokens').textContent = '';
+    jumpBtn.style.display = 'none';
   }
 
   // ── Send message ──
@@ -1723,7 +1873,7 @@ export class JarvisPanel {
     div.id = id;
     div.innerHTML =
       '<div class="cmd-card-header">' +
-        '<span class="cmd-card-icon">⬡</span>' +
+        '<span class="cmd-card-icon">\\u2b21</span>' +
         '<span class="cmd-card-label">Run command</span>' +
       '</div>' +
       '<div class="cmd-card-body">' +
@@ -1741,14 +1891,14 @@ export class JarvisPanel {
 
     runBtn.addEventListener('click', () => {
       runBtn.disabled = true;
-      runBtn.textContent = 'Running…';
+      runBtn.textContent = 'Running\\u2026';
       skipBtn.remove();
       const killBtn = document.createElement('button');
       killBtn.className = 'cmd-kill-btn';
       killBtn.textContent = 'Kill';
       killBtn.addEventListener('click', () => {
         killBtn.disabled = true;
-        killBtn.textContent = 'Killing…';
+        killBtn.textContent = 'Killing\\u2026';
         fetch('http://localhost:3131/kill-command', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1760,24 +1910,26 @@ export class JarvisPanel {
     });
 
     skipBtn.addEventListener('click', () => {
-      actionsDiv.innerHTML = '<span class="cmd-status" style="color:var(--vscode-descriptionForeground);opacity:0.55">— denied</span>';
+      actionsDiv.innerHTML = '<span class="cmd-status" style="color:var(--vscode-descriptionForeground);opacity:0.55">\\u2014 denied</span>';
     });
 
     messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
+    scrollToBottom();
   }
 
   // ── Handle messages from extension ──
   window.addEventListener('message', (e) => {
+    const msg = e.data;
     const { command, text, tokens, filesWritten, commandsToRun,
-            card_id, success, output, session, sessionsData, sessionName } = e.data;
+            card_id, success, output, session, sessionsData, sessionName,
+            rootPath, job } = msg;
 
     if (command === 'commandResult') {
       const card = document.getElementById(card_id);
       if (card) {
         const actions = card.querySelector('.cmd-card-actions');
         const killed = output && output.startsWith('Killed by user');
-        const icon  = success ? '✓' : killed ? '◼' : '✕';
+        const icon  = success ? '\\u2713' : killed ? '\\u25fc' : '\\u2717';
         const label = success ? 'Done' : killed ? 'Killed' : 'Failed';
         const color = success ? '#4ec9b0' : killed ? '#ce9178' : '#f48771';
         if (actions) {
@@ -1787,7 +1939,6 @@ export class JarvisPanel {
               '<span>' + label + '</span>' +
             '</span>';
         }
-        // Update left border color to reflect result
         card.style.borderLeftColor = color;
         if (output) {
           const pre = document.createElement('div');
@@ -1796,7 +1947,7 @@ export class JarvisPanel {
           const body = card.querySelector('.cmd-card-body');
           if (body) body.appendChild(pre);
         }
-        messages.scrollTop = messages.scrollHeight;
+        scrollToBottom();
       }
       return;
     }
@@ -1807,6 +1958,12 @@ export class JarvisPanel {
       const nameEl = document.getElementById('session-name');
       if (nameEl) nameEl.textContent = session.name || '';
       addMsg('New session started.', 'msg-system');
+      _resetNewSessBtn();
+      return;
+    }
+
+    if (command === 'newSessionFailed') {
+      _resetNewSessBtn();
       return;
     }
 
@@ -1818,17 +1975,16 @@ export class JarvisPanel {
       const msgs = session.messages || [];
       msgs.forEach(m => addMsg(m.content, m.role === 'user' ? 'msg-user' : 'msg-jarvis'));
       if (msgs.length > 0) {
-        addMsg('Session restored \u2014 ' + msgs.length + ' message' + (msgs.length === 1 ? '' : 's') + ' loaded.', 'msg-system');
+        addMsg('Session restored \\u2014 ' + msgs.length + ' message' + (msgs.length === 1 ? '' : 's') + ' loaded.', 'msg-system');
       }
       return;
     }
 
     if (command === 'sessionsListLoaded') {
-      populateDrawer(sessionsData);
+      populateSessionsList(sessionsData);
       return;
     }
 
-    // Only clear the thinking indicator when an actual response or error arrives.
     if (command === 'response' || command === 'error') {
       hideTyping(tokens || null);
       isSending = false;
@@ -1858,29 +2014,22 @@ export class JarvisPanel {
       dot.className = text === 'online' ? 'online' : 'offline';
     } else if (command === 'workspaceInfo') {
       const el = document.getElementById('workspace-name');
-      if (el) el.textContent = text ? '\u2014 ' + text : '';
-      if (msg.rootPath) { _currentWorkspaceRoot = msg.rootPath; }
+      if (el) el.textContent = text ? '\\u2014 ' + text : '';
+      if (rootPath) { _currentWorkspaceRoot = rootPath; }
     } else if (command === 'startAutoChat') {
-      // Extension auto-notifying Jarvis of a command result
-      const succeeded = msg.success;
-      const label = succeeded ? 'Command done \u2014 getting Jarvis\u2019s take\u2026' : 'Command failed \u2014 notifying Jarvis\u2026';
+      const succeeded = success;
+      const label = succeeded ? 'Command done \\u2014 getting Jarvis\\u2019s take\\u2026' : 'Command failed \\u2014 notifying Jarvis\\u2026';
       addMsg(label, 'msg-system');
       isSending = true;
       sendBtn.disabled = true;
       showTyping();
-
     } else if (command === 'agentJobStarted') {
-      // Phase 12: complex task started — show agent progress panel
       hideTyping();
       createAgentPanel(msg.job_id);
-
     } else if (command === 'agentStatusUpdate') {
-      // Phase 12: poll result — update agent rows
-      updateAgentPanel(msg.job);
-
+      updateAgentPanel(job);
     } else if (command === 'agentJobDone') {
-      // Phase 12: all agents finished
-      finalizeAgentPanel(msg.job);
+      finalizeAgentPanel(job);
       isSending = false;
       sendBtn.disabled = !input.value.trim();
     }
@@ -1896,17 +2045,17 @@ export class JarvisPanel {
     div.className = 'agent-panel';
     div.id = _agentPanelId;
     div.innerHTML = '<div class="agent-panel-header">' +
-      '<span class="agent-panel-icon">\u26c1</span> ' +
-      '<span class="agent-panel-title">Running agents\u2026</span>' +
+      '<span class="agent-panel-icon">\\u26c1</span> ' +
+      '<span class="agent-panel-title">Running agents\\u2026</span>' +
       '</div>' +
       '<div class="agent-rows" id="agent-rows-' + jobId + '"></div>';
-    msgs.appendChild(div);
+    messages.appendChild(div);
     scrollToBottom();
   }
 
   function _agentStatusIcon(status) {
-    const icons = { pending: '\u25cb', running: '\u25cf', success: '\u2713', failed: '\u2717', skipped: '\u2212', waiting: '\u25cc' };
-    return icons[status] || '\u25cb';
+    const icons = { pending: '\\u25cb', running: '\\u25cf', success: '\\u2713', failed: '\\u2717', skipped: '\\u2212', waiting: '\\u25cc' };
+    return icons[status] || '\\u25cb';
   }
   function _agentStatusClass(status) {
     const cls = { pending: 'ag-pending', running: 'ag-running', success: 'ag-success', failed: 'ag-failed', skipped: 'ag-skip', waiting: 'ag-waiting' };
@@ -1919,13 +2068,14 @@ export class JarvisPanel {
   }
 
   function updateAgentPanel(job) {
+    if (!job) { return; }
     const rowsEl = document.getElementById('agent-rows-' + job.job_id);
     if (!rowsEl) { return; }
     const agents = job.agents || {};
     rowsEl.innerHTML = Object.values(agents).map(function(a) {
       const icon = _agentStatusIcon(a.status);
       const cls  = _agentStatusClass(a.status);
-      const time = a.started_at ? ' \u00b7 ' + _elapsed(a.started_at) : '';
+      const time = a.started_at ? ' \\u00b7 ' + _elapsed(a.started_at) : '';
       const deps = a.depends_on && a.depends_on.length ? '<span class="ag-deps">after: ' + a.depends_on.join(', ') + '</span>' : '';
       const files = (a.files_created.length + a.files_modified.length > 0)
         ? '<div class="ag-files">' +
@@ -1944,7 +2094,6 @@ export class JarvisPanel {
       '</div>';
     }).join('');
 
-    // Wire up file clicks to open the file in VS Code
     rowsEl.querySelectorAll('.ag-file').forEach(function(el) {
       el.addEventListener('click', function() {
         vscode.postMessage({ command: 'openFile', path: el.getAttribute('data-path') });
@@ -1955,6 +2104,7 @@ export class JarvisPanel {
   }
 
   function finalizeAgentPanel(job) {
+    if (!job) { return; }
     const panel = document.getElementById(_agentPanelId);
     if (!panel) { return; }
     const titleEl = panel.querySelector('.agent-panel-title');
@@ -1966,7 +2116,6 @@ export class JarvisPanel {
       titleEl.textContent = ok + '/' + total + ' agents done' + (fail > 0 ? ' (' + fail + ' failed)' : '');
     }
     updateAgentPanel(job);
-    // Phase 13: show rating prompt when job is finished
     if (job.rate_prompt) {
       let rateEl = panel.querySelector('.agent-rate-prompt');
       if (!rateEl) {
@@ -1995,13 +2144,13 @@ export class JarvisPanel {
     bar.innerHTML = '';
     for (const n of notifications) {
       const cls = n.severity === 'warning' ? 'notif-warning' : 'notif-info';
-      const icon = n.severity === 'warning' ? '⚠' : 'ℹ';
+      const icon = n.severity === 'warning' ? '\\u26a0' : '\\u2139';
       const div = document.createElement('div');
       div.className = 'notif-banner ' + cls;
       div.innerHTML =
         '<span class="notif-icon">' + icon + '</span>' +
         '<span class="notif-text">' + _esc(n.message) + '</span>' +
-        '<button class="notif-close" data-id="' + _esc(n.id) + '" title="Dismiss">✕</button>';
+        '<button class="notif-close" data-id="' + _esc(n.id) + '" title="Dismiss">\\u2715</button>';
       bar.appendChild(div);
     }
     bar.querySelectorAll('.notif-close').forEach(btn => {

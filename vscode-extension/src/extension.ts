@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
-import { JarvisPanel, setOutputChannel } from './jarvisPanel';
+import { JarvisViewProvider, setOutputChannel } from './jarvisPanel';
 
 let serverProcess: cp.ChildProcess | undefined;
 let statusBar: vscode.StatusBarItem;
@@ -16,16 +16,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Status bar item — bottom right, always visible
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBar.command = 'jarvis.openPanel';
+    statusBar.command = 'jarvis.view.focus';
     setStatusBar('starting');
     statusBar.show();
 
     context.subscriptions.push(statusBar, outputChannel);
 
+    // Register the sidebar WebviewViewProvider
+    const provider = new JarvisViewProvider(context.extensionUri);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            JarvisViewProvider.viewType,
+            provider,
+            { webviewOptions: { retainContextWhenHidden: true } }
+        )
+    );
+
     // Commands
     context.subscriptions.push(
         vscode.commands.registerCommand('jarvis.openPanel', () => {
-            JarvisPanel.createOrShow(context.extensionUri);
+            vscode.commands.executeCommand('jarvis.view.focus');
         }),
         vscode.commands.registerCommand('jarvis.restartServer', async () => {
             outputChannel.appendLine('--- Restarting server ---');
@@ -45,8 +55,8 @@ export function activate(context: vscode.ExtensionContext): void {
                 vscode.window.showInformationMessage('Jarvis: Select some code first.');
                 return;
             }
-            JarvisPanel.createOrShow(context.extensionUri);
-            JarvisPanel.prefillInput(`Explain this code:\n\`\`\`\n${sel}\n\`\`\``);
+            vscode.commands.executeCommand('jarvis.view.focus');
+            JarvisViewProvider.prefillInput(`Explain this code:\n\`\`\`\n${sel}\n\`\`\``);
         })
     );
 
@@ -140,7 +150,7 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
     } else {
         setStatusBar('offline');
         outputChannel.appendLine('Server did not respond in time. Check output above for errors.');
-        outputChannel.show();  // Auto-open the output channel so user can see the error
+        outputChannel.show();
     }
 }
 

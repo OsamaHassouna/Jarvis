@@ -16,13 +16,16 @@ function activate(context) {
     (0, jarvisPanel_1.setOutputChannel)(outputChannel);
     // Status bar item — bottom right, always visible
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBar.command = 'jarvis.openPanel';
+    statusBar.command = 'jarvis.view.focus';
     setStatusBar('starting');
     statusBar.show();
     context.subscriptions.push(statusBar, outputChannel);
+    // Register the sidebar WebviewViewProvider
+    const provider = new jarvisPanel_1.JarvisViewProvider(context.extensionUri);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(jarvisPanel_1.JarvisViewProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }));
     // Commands
     context.subscriptions.push(vscode.commands.registerCommand('jarvis.openPanel', () => {
-        jarvisPanel_1.JarvisPanel.createOrShow(context.extensionUri);
+        vscode.commands.executeCommand('jarvis.view.focus');
     }), vscode.commands.registerCommand('jarvis.restartServer', async () => {
         outputChannel.appendLine('--- Restarting server ---');
         serverProcess?.kill();
@@ -40,8 +43,8 @@ function activate(context) {
             vscode.window.showInformationMessage('Jarvis: Select some code first.');
             return;
         }
-        jarvisPanel_1.JarvisPanel.createOrShow(context.extensionUri);
-        jarvisPanel_1.JarvisPanel.prefillInput(`Explain this code:\n\`\`\`\n${sel}\n\`\`\``);
+        vscode.commands.executeCommand('jarvis.view.focus');
+        jarvisPanel_1.JarvisViewProvider.prefillInput(`Explain this code:\n\`\`\`\n${sel}\n\`\`\``);
     }));
     startServer(context);
 }
@@ -116,7 +119,7 @@ async function startServer(context) {
     else {
         setStatusBar('offline');
         outputChannel.appendLine('Server did not respond in time. Check output above for errors.');
-        outputChannel.show(); // Auto-open the output channel so user can see the error
+        outputChannel.show();
     }
 }
 async function isServerRunning() {

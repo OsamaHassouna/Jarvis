@@ -128,6 +128,18 @@ def save_session(session: dict) -> None:
     _write_json(path, session)
 
 
+def delete_session(session_id: str, workspace_root: str, is_global: bool) -> bool:
+    """Delete a session file. Returns True if the file existed and was removed."""
+    path = _session_path(session_id, workspace_root, is_global)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def append_message(
     session_id: str,
     workspace_root: str,

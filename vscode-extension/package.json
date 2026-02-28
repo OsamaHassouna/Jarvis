@@ -18,6 +18,24 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "jarvis-sidebar",
+          "title": "Jarvis",
+          "icon": "media/jarvis-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "jarvis-sidebar": [
+        {
+          "type": "webview",
+          "id": "jarvis.view",
+          "name": "Jarvis"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "jarvis.openPanel",
@@ -35,7 +53,7 @@
     ],
     "keybindings": [
       {
-        "command": "jarvis.openPanel",
+        "command": "jarvis.view.focus",
         "key": "ctrl+shift+j",
         "mac": "cmd+shift+j"
       },
