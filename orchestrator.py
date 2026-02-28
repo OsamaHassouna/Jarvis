@@ -187,6 +187,12 @@ User task: {user_input}
 Known projects: {[p['name'] for p in projects] if projects else 'none'}
 """
 
+    # Phase 13: inject relevant past ratings to calibrate agent count
+    from tools.ratings import get_relevant_ratings, format_ratings_for_injection
+    _rating_context = format_ratings_for_injection(get_relevant_ratings(user_input))
+    if _rating_context:
+        breakdown_prompt += f"\n\n{_rating_context}"
+
     response = client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
@@ -349,6 +355,9 @@ def handle_complex_task(user_input: str, model: str) -> str:
             ok, msg = open_browser_preview(working_dir)
             print(msg)
 
+    # Phase 13: prompt for rating (terminal mode)
+    _prompt_for_rating(user_input, len(agent_definitions), working_dir)
+
     # Build response for Jarvis
     response = f"""
 🎯 Task Complete!
@@ -362,6 +371,26 @@ def handle_complex_task(user_input: str, model: str) -> str:
 
     response += "\nCheck the output above for full details from each agent."
     return response.strip()
+
+
+def _prompt_for_rating(task_summary: str, agent_count: int,
+                       workspace_root: str = "") -> None:
+    """Terminal-mode rating prompt. Non-blocking — Enter skips."""
+    from tools.ratings import save_rating
+    try:
+        raw = input(
+            f"\nRate this breakdown (1-5) or Enter to skip: "
+        ).strip()
+        if not raw:
+            return
+        n = int(raw)
+        if 1 <= n <= 5:
+            save_rating(task_summary[:60], agent_count, n, workspace_root)
+            print(f"   Rating saved: {n}/5 — Jarvis will use this for future tasks.")
+        else:
+            print("   Rating must be 1-5. Skipped.")
+    except (ValueError, KeyboardInterrupt):
+        pass
 
 def detect_and_save_preference(message: str) -> str | None:
     """
@@ -1026,13 +1055,69 @@ def _natural_memory_delete(message: str) -> str | None:
     return None
 
 
+# ── Phase 13: rating commands ─────────────────────────────────────────────────
+
+def handle_rating_command(message: str) -> str | None:
+    """
+    Intercept /rate and /ratings commands — no Claude call needed.
+    /rate <1-5>          — save a rating for the last complex task
+    /ratings             — list recent ratings
+    /ratings clear       — remove all ratings
+    Returns response string or None (pass through to Claude).
+    """
+    from tools.ratings import save_rating, format_ratings_list, clear_ratings
+    lower = message.strip().lower()
+
+    # /ratings  or  /ratings clear
+    if lower in ("/ratings", "/rating"):
+        return format_ratings_list()
+    if lower in ("/ratings clear", "/rating clear"):
+        clear_ratings()
+        return "All task ratings cleared."
+
+    # /rate <n>
+    if lower.startswith("/rate "):
+        raw = lower[6:].strip()
+        try:
+            n = int(raw)
+        except ValueError:
+            return f'Invalid rating "{raw}". Use `/rate 1` through `/rate 5`.'
+        if not 1 <= n <= 5:
+            return f"Rating must be between 1 and 5. Got: {n}"
+        if not _pending_rating:
+            return (
+                "No recent complex task to rate.\n\n"
+                "Run a multi-agent task first, then use `/rate 1-5` to record how it went."
+            )
+        save_rating(
+            _pending_rating["task_summary"],
+            _pending_rating["agent_count"],
+            n,
+            _pending_rating.get("workspace", ""),
+        )
+        stars = "★" * n + "☆" * (5 - n)
+        return (
+            f"Rating saved: {stars}  ({n}/5 for \"{_pending_rating['task_summary']}\")\n\n"
+            f"Jarvis will use this to improve future agent breakdowns."
+        )
+
+    return None
+
+
 # ── Template tracking (last breakdown, so /template save can grab it) ─────────
 
 _last_agent_defs: list = []   # set by handle_complex_task after breakdown
 
+# Phase 13: pending rating context — set after a VS Code agent job finishes
+_pending_rating: dict = {}   # {"task_summary": str, "agent_count": int, "workspace": str}
+
 
 def get_last_agent_defs() -> list:
     return list(_last_agent_defs)
+
+
+def get_pending_rating() -> dict:
+    return dict(_pending_rating)
 
 
 # ── VS Code session tracking ──────────────────────────────────────────────────
@@ -1501,7 +1586,7 @@ def process_for_vscode(
     """
     global _last_session_id, _last_session_name
 
-    # Intercept /rules, /template, and /memory commands — no Claude call needed
+    # Intercept /rules, /template, /memory, and /rate commands — no Claude call needed
     rules_response = handle_rules_command(message, workspace_root)
     if rules_response is not None:
         return rules_response
@@ -1514,6 +1599,9 @@ def process_for_vscode(
     nat_mem_response = _natural_memory_delete(message)
     if nat_mem_response is not None:
         return nat_mem_response
+    rate_response = handle_rating_command(message)
+    if rate_response is not None:
+        return rate_response
 
     # Shortcut: trivial social messages need no Claude call (saves ~3k tokens + 19s)
     _TRIVIAL_PHRASES = {
@@ -1738,6 +1826,14 @@ def handle_complex_task_vscode(user_input: str, workspace_root: str, job_id: str
 
         cleanup_handoff(working_dir)
 
+        # Phase 13: store pending rating context so /rate command can use it
+        global _pending_rating
+        _pending_rating = {
+            "task_summary": user_input[:60],
+            "agent_count": len(agent_definitions),
+            "workspace": workspace_root or "",
+        }
+
         from tools.agent_jobs import get_job
         job = get_job(job_id)
         summary = (job or {}).get("summary", {})
@@ -1842,6 +1938,12 @@ def process(user_input: str, history: list) -> str:
     update_last_session()
     detect_and_save_preference(user_input)
     add_to_history("user", user_input)
+
+    # Intercept /rate and /ratings commands
+    rate_response = handle_rating_command(user_input)
+    if rate_response is not None:
+        add_to_history("assistant", rate_response)
+        return rate_response
 
     # Intercept /template commands before complexity classification
     tmpl_response = handle_template_command(user_input)

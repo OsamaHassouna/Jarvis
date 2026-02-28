@@ -110,7 +110,11 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json(404, {"error": "Job not found"})
                 return
-            self._send_json(200, job)
+            # Phase 13: include rating prompt when job is finished
+            result = dict(job)
+            if result.get("status") in ("done", "failed"):
+                result["rate_prompt"] = "How did that go? Rate the agent breakdown: `/rate 1` – `/rate 5`"
+            self._send_json(200, result)
 
         else:
             self._send_json(404, {"error": "Not found"})

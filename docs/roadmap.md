@@ -1,6 +1,6 @@
 # Jarvis — Full Roadmap & Vision
 **Last Updated:** February 2026
-**Current Status:** Phase 12 Complete ✅ | 229/229 tests passing
+**Current Status:** Phase 13 Complete ✅ | 247/247 tests passing
 
 ---
 
@@ -120,37 +120,20 @@ Agent panel shows live status:
 
 ---
 
-## Phase 13 — Learning from Outcomes
-**Priority: MEDIUM — needs Phase 9 data first**
-**Goal:** Jarvis learns which task breakdowns work well and which don't, so it improves
-its agent planning over time.
+## Phase 13 — Learning from Outcomes ✅ Complete
 
-### What to build:
-After every complex task, prompt for feedback:
-```
-Task complete (3/4 agents succeeded). How did this go?
-  [1 Poor] [2] [3 OK] [4] [5 Great]  or skip
-```
+**Goal:** Jarvis learns which agent breakdowns work well and which don't.
 
-Store ratings in memory:
-```json
-{
-  "task_ratings": [
-    { "task_pattern": "create angular component", "agents": 3, "rating": 4, "date": "2026-02" },
-    { "task_pattern": "add dotnet endpoint", "agents": 4, "rating": 2, "notes": "too many agents" }
-  ]
-}
-```
+### What was built:
+- `tools/ratings.py` — `save_rating()`, `get_relevant_ratings()` (keyword Jaccard match), `format_ratings_for_injection()`, `format_ratings_list()`
+- Ratings stored in `memory["task_ratings"]` — capped at 50, per-task summary + agent count + score + date
+- Relevant past ratings injected into `breakdown_into_agents()` prompt automatically
+- Terminal: rating prompt after every `handle_complex_task()` (Enter to skip)
+- VS Code: `_pending_rating` global + `rate_prompt` field in `/agents/status`; dimmed hint shown below agent panel
+- `/rate 1-5` — save rating for last task; `/ratings` — view history; `/ratings clear` — reset
+- **18 tests** — all passing
 
-Inject relevant history into `breakdown_into_agents()`:
-```
-Past experience: "add dotnet endpoint" — rated 2/5 when using 4 agents (2 failed).
-Recommended: use 2 agents instead.
-```
-
-**Estimated tests:** 6-8
-**Effort:** 1-2 sessions
-**Dependencies:** Benefits from Phase 9 structured output to know what actually changed
+**See:** [phase13_plan.md](phase13_plan.md)
 
 ---
 
@@ -210,7 +193,7 @@ Given your stack (Angular + .NET, VS Code user) and current state:
 |---|---|---|---|
 | 1 | ~~**Phase 11** (templates)~~ | ✅ Done | — |
 | 2 | ~~**Phase 12** (VS Code parity)~~ | ✅ Done | — |
-| 3 | **Phase 13** (learning) | Needs time + data to be useful | 1-2 sessions |
+| 3 | ~~**Phase 13** (learning)~~ | ✅ Done | — |
 | 4 | **Phase 14** (multi-project) | Only needed for large multi-repo work | 2-3 sessions |
 | 5 | **Phase 15** (proactive watcher) | Cool but lower urgency | 2-3 sessions |
 
@@ -279,12 +262,13 @@ You (terminal, VS Code, any machine)
 | Phase 10 | 21 | ✅ All passing |
 | Phase 11 | 34 | ✅ All passing (20 original + 14 post-P12 fixes) |
 | Phase 12 | 20 | ✅ All passing |
-| **Total** | **229 passing** | |
+| Phase 13 | 18 | ✅ All passing |
+| **Total** | **247 passing** | |
 
 ---
 
 ## Phase docs
-[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md) · [phase12](phase12_plan.md)
+[phase1](phase1_plan.md) · [phase2](phase2_plan.md) · [phase3](phase3_plan.md) · [phase4](phase4_plan.md) · [phase5](phase5_plan.md) · [phase6](phase6_plan.md) · [phase7](phase7_plan.md) · [phase8](phase8_plan.md) · [phase9](phase9_plan.md) · [phase10](phase10_plan.md) · [phase11](phase11_plan.md) · [phase12](phase12_plan.md) · [phase13](phase13_plan.md)
 
 ## How to continue in a new session
 Start with: `docs/roadmap.md` + the relevant phase doc + specific files.

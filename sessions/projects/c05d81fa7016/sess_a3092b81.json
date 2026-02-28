@@ -5,7 +5,7 @@
   "project_name": "Jarvis",
   "is_global": false,
   "created_at": "2026-02-27T23:54:36",
-  "updated_at": "2026-02-28T00:09:07",
+  "updated_at": "2026-02-28T00:39:34",
   "messages": [
     {
       "role": "user",
@@ -36,8 +36,18 @@
       "role": "assistant",
       "content": "Good thinking. Your concern is valid — keyword-based matching is too fragile and causes false positives.\n\n## My Recommendation: Explicit Intent Phrase\n\nThe cleanest approach is requiring a **specific intent prefix** rather than detecting template names in free text.\n\n### Best Options (pick one style):\n\n| Style | Example |\n|---|---|\n| `use template:` prefix | `use template: auth-guard` |\n| `run template:` prefix | `run template: new-angular-feature` |\n| `/template` command | `/template auth-guard` |\n| Natural but explicit | `\"apply the auth-guard template\"` (must include \"apply the\" + \"template\") |\n\n---\n\n## My Pick for You: `/template <name>`\n\nSince you already use slash commands (`/rules`, `/memory`), this fits perfectly:\n\n```\n/template auth-guard\n/template new-angular-feature\n/template dotnet-endpoint\n```\n\n**Why it's better:**\n- Zero false positives — it only triggers when you explicitly type `/template`\n- You can freely talk about auth guards, migrations, endpoints without triggering anything\n- Consistent with your existing command style\n- Easy to list available templates with just `/templates`\n\n---\n\n## How It Would Work\n\n- `/templates` → list all available templates\n- `/template auth-guard` → trigger the angular-auth-guard template\n- `/template auth-guard for the AdminModule` → trigger with extra context passed in\n\n---\n\nWant me to implement this? I'd update the template detection logic to only fire on the `/template` command and remove the fuzzy keyword matching.",
       "ts": "2026-02-28T00:09:07"
+    },
+    {
+      "role": "user",
+      "content": "let me see all the saved templates we have",
+      "ts": "2026-02-28T00:39:34"
+    },
+    {
+      "role": "assistant",
+      "content": "Those are folders, not files — they're likely empty. Here's a full summary of all your saved templates:\n\n---\n\n## 🗂️ Global Templates (4)\n\n### 1. `angular-auth-guard`\n**Description:** Auth guard, interceptor, and login page for Angular route protection\n**Agents:**\n- `guard` — Functional route guard with redirect to /login\n- `interceptor` — HTTP interceptor for Bearer token + 401 handling\n- `login-page` — Login form component with reactive forms *(depends on: interceptor)*\n- `tests` — Unit tests for guard and interceptor *(depends on: guard, interceptor)*\n\n---\n\n### 2. `dotnet-ef-migration`\n**Description:** EF Core entity, DbContext update, repository, and migration\n**Agents:**\n- `entity` — EF Core entity class\n- `dbcontext` — DbSet + OnModelCreating *(depends on: entity)*\n- `repository` — Repo interface + implementation + DI *(depends on: entity, dbcontext)*\n- `migration` — CLI migration command output *(depends on: dbcontext)*\n\n---\n\n### 3. `dotnet-endpoint`\n**Description:** Full .NET API endpoint: DTOs, service method, controller action, and xUnit tests\n**Agents:**\n- `dto` — Request/Response DTO classes\n- `service` — Business logic method + DI *(depends on: dto)*\n- `controller` — Controller action with routing + bindings *(depends on: dto, service)*\n- `tests` — xUnit tests with Moq *(depends on: controller, service)*\n\n---\n\n### 4. `new-angular-feature`\n**Description:** Standalone component, service, route wiring, and unit tests\n**Agents:**\n- `component` — Angular 17+ standalone component\n- `service` — Injectable service with HttpClient\n- `routing` — Lazy-loaded route wiring *(depends on: component)*\n- `tests` — Jasmine/Jest unit tests *(depends on: component, service)*\n\n---\n\n**Project-specific templates:** The two project folders (`70ec297f7fbe`, `c05d81fa7016`) appear to be empty — no project-specific templates saved yet.",
+      "ts": "2026-02-28T00:39:34"
     }
   ],
   "summary": "",
-  "token_total": 18788
+  "token_total": 32669
 }

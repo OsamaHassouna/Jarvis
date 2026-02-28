@@ -848,6 +848,14 @@ class JarvisPanel {
   .ag-file:hover { opacity: 0.7; }
   .ag-created  { background: rgba(78,201,176,0.15); color: #4ec9b0; }
   .ag-modified { background: rgba(206,145,120,0.15); color: #ce9178; }
+  /* Phase 13: rating prompt */
+  .agent-rate-prompt {
+    padding: 6px 12px;
+    font-size: 11px;
+    opacity: 0.65;
+    border-top: 1px solid rgba(128,128,128,0.15);
+    font-style: italic;
+  }
   /* status colours */
   .ag-running .ag-icon { color: #4ec9b0; animation: spin 1.4s linear infinite; }
   .ag-success .ag-icon { color: #4ec9b0; }
@@ -1889,6 +1897,16 @@ class JarvisPanel {
       titleEl.textContent = ok + '/' + total + ' agents done' + (fail > 0 ? ' (' + fail + ' failed)' : '');
     }
     updateAgentPanel(job);
+    // Phase 13: show rating prompt when job is finished
+    if (job.rate_prompt) {
+      let rateEl = panel.querySelector('.agent-rate-prompt');
+      if (!rateEl) {
+        rateEl = document.createElement('div');
+        rateEl.className = 'agent-rate-prompt';
+        panel.appendChild(rateEl);
+      }
+      rateEl.textContent = job.rate_prompt;
+    }
   }
 
   // Check server on load
