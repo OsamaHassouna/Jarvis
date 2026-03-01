@@ -252,7 +252,8 @@ You (terminal, VS Code, any machine)
 | Phase 12 | 20 | ✅ All passing |
 | Phase 13 | 18 | ✅ All passing |
 | Phase 15 | 18 | ✅ All passing |
-| **Total** | **265 passing** | |
+| Phase 16 | 15 | ✅ All passing |
+| **Total** | **290 passing** | |
 
 ---
 
@@ -262,3 +263,6 @@ You (terminal, VS Code, any machine)
 ## How to continue in a new session
 Start with: `docs/roadmap.md` + the relevant phase doc + specific files.
 Say: **"Continue building Jarvis — see roadmap for current state and next priorities"**
+
+**Starting Phase 16–20:** See [phases16-20_plan.md](phases16-20_plan.md) for the full plan.
+Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**

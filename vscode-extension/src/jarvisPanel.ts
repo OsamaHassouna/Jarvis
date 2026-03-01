@@ -168,6 +168,8 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
                 session_id?: string;
                 session_name?: string;
                 agent_job_id?: string;
+                session_token_total?: number;
+                compressed_count?: number;
             };
 
             if (data.session_id) { this._currentSessionId = data.session_id; }
@@ -185,6 +187,8 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
                 ...(filesWritten.length > 0 ? { filesWritten } : {}),
                 ...(commandsToRun.length > 0 ? { commandsToRun } : {}),
                 ...(data.session_name !== undefined ? { sessionName: data.session_name } : {}),
+                ...(data.session_token_total !== undefined ? { sessionTokenTotal: data.session_token_total } : {}),
+                ...(data.compressed_count !== undefined ? { compressedCount: data.compressed_count } : {}),
             });
 
         } catch {
@@ -527,6 +531,24 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     font-family: var(--vscode-editor-font-family, monospace);
     white-space: nowrap;
     margin-right: 3px;
+  }
+
+  /* Phase 16: token budget bar — shown only when >50% of soft budget used */
+  #token-bar {
+    height: 2px;
+    width: 100%;
+    display: none;
+    background: var(--vscode-sideBar-background, transparent);
+    flex-shrink: 0;
+  }
+  #token-bar-fill {
+    height: 100%;
+    max-width: 100%;
+    background: var(--vscode-notificationsWarningIcon-foreground, #cca700);
+    transition: width 0.4s ease;
+  }
+  #token-bar.critical #token-bar-fill {
+    background: var(--vscode-notificationsErrorIcon-foreground, #f44747);
   }
 
   .hdr-btn {
@@ -1314,6 +1336,9 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
   <!-- Phase 15: notification banners -->
   <div id="notification-bar"></div>
 
+  <!-- Phase 16: token budget bar -->
+  <div id="token-bar"><div id="token-bar-fill" style="width:0%"></div></div>
+
   <div id="messages-wrap">
     <div id="messages">
       <div class="msg msg-system">
@@ -1452,6 +1477,11 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     return modelId || 'Sonnet';
   }
 
+  // Phase 16: soft token budget (50K). Show bar when >50% used.
+  const TOKEN_SOFT_BUDGET = 50000;
+  let sessionServerTokenTotal = 0;  // cumulative from server-side session.token_total
+  let sessionCompressedCount = 0;   // messages compressed so far
+
   // ── Update session token counter in header ──
   function updateSessionCounter() {
     const el = document.getElementById('session-tokens');
@@ -1459,7 +1489,28 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
       const cost = sessionTotalCost >= 0.01
         ? '$' + sessionTotalCost.toFixed(2)
         : '$' + sessionTotalCost.toFixed(5).replace(/0+$/, '');
-      el.textContent = sessionTotalTokens.toLocaleString() + ' tok \\u2022 ' + cost;
+      let label = sessionTotalTokens.toLocaleString() + ' tok \\u2022 ' + cost;
+      if (sessionCompressedCount > 0) {
+        label += ' \\u2022 ' + sessionCompressedCount + ' compressed';
+      }
+      el.textContent = label;
+    }
+    _updateTokenBar();
+  }
+
+  // ── Token budget bar ──
+  function _updateTokenBar() {
+    const bar = document.getElementById('token-bar');
+    const fill = document.getElementById('token-bar-fill');
+    if (!bar || !fill) { return; }
+    const used = sessionServerTokenTotal || sessionTotalTokens;
+    const pct = Math.min(100, (used / TOKEN_SOFT_BUDGET) * 100);
+    if (pct >= 50) {
+      bar.style.display = 'block';
+      fill.style.width = pct + '%';
+      bar.classList.toggle('critical', pct >= 90);
+    } else {
+      bar.style.display = 'none';
     }
   }
 
@@ -1972,14 +2023,15 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
       e.stopPropagation();
       const effectiveWsRoot = sess.workspace_root || workspaceRoot;
       vscode.postMessage({ command: 'deleteSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
+      // Capture prev BEFORE remove — once detached, previousElementSibling is null
+      const prev = item.previousElementSibling;
       item.remove();
       // If this was the active session, clear header name
       if (sess.id === currentSessionId) {
         const nameEl = document.getElementById('session-name');
         if (nameEl) nameEl.textContent = '';
       }
-      // Hide group label if no items left in it
-      const prev = item.previousElementSibling;
+      // Hide group label if no items left under it
       if (prev && prev.classList.contains('session-group-label')) {
         const next = prev.nextElementSibling;
         if (!next || next.classList.contains('session-group-label')) { prev.remove(); }
@@ -1993,7 +2045,11 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     messages.innerHTML = '';
     sessionTotalTokens = 0;
     sessionTotalCost = 0;
+    sessionServerTokenTotal = 0;
+    sessionCompressedCount = 0;
     document.getElementById('session-tokens').textContent = '';
+    const bar = document.getElementById('token-bar');
+    if (bar) { bar.style.display = 'none'; }
     jumpBtn.style.display = 'none';
   }
 
@@ -2082,7 +2138,7 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     const msg = e.data;
     const { command, text, tokens, filesWritten, commandsToRun,
             card_id, success, output, session, sessionsData, sessionName,
-            rootPath, job } = msg;
+            rootPath, job, sessionTokenTotal, compressedCount } = msg;
 
     if (command === 'commandResult') {
       const card = document.getElementById(card_id);
@@ -2156,6 +2212,15 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
       if (sessionName) {
         const nameEl = document.getElementById('session-name');
         if (nameEl) nameEl.textContent = sessionName;
+      }
+      // Phase 16: update token bar and compression counter from server-side data
+      if (sessionTokenTotal !== undefined) {
+        sessionServerTokenTotal = sessionTokenTotal;
+        _updateTokenBar();
+      }
+      if (compressedCount !== undefined && compressedCount > 0) {
+        sessionCompressedCount = compressedCount;
+        updateSessionCounter();
       }
       if (filesWritten && filesWritten.length > 0) {
         filesWritten.forEach(p => addFileCard(p));

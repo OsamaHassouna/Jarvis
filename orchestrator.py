@@ -455,13 +455,28 @@ _SCAN_IGNORE_DIRS = {
 }
 
 
+# Phase 16: workspace scan cache — keyed by workspace_path, invalidated on dir mtime change
+_scan_cache: dict = {}
+
+
 def scan_workspace_files(workspace_path: str, max_depth: int = 3, max_lines: int = 60) -> str:
     """
     Generate a compact file tree for a workspace directory.
+    Phase 16: result is cached per workspace; cache is invalidated when the
+    workspace directory's mtime changes (covers adds/deletes at the root level).
     Returns empty string if path is invalid.
     """
     if not workspace_path or not os.path.isdir(workspace_path):
         return ""
+
+    # Check cache
+    try:
+        current_mtime = os.path.getmtime(workspace_path)
+        cached = _scan_cache.get(workspace_path)
+        if cached and cached["mtime"] == current_mtime:
+            return cached["result"]
+    except OSError:
+        pass
 
     root_name = os.path.basename(workspace_path.rstrip('/\\')) or workspace_path
     lines = [root_name + "/"]
@@ -488,7 +503,18 @@ def scan_workspace_files(workspace_path: str, max_depth: int = 3, max_lines: int
                 _walk(entry.path, depth + 1, child_prefix)
 
     _walk(workspace_path, 1, "")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    # Store in cache
+    try:
+        _scan_cache[workspace_path] = {
+            "mtime": os.path.getmtime(workspace_path),
+            "result": result,
+        }
+    except OSError:
+        pass
+
+    return result
 
 
 def read_mentioned_files(message: str, workspace_root: str, max_files: int = 3) -> list:
@@ -1124,6 +1150,8 @@ def get_pending_rating() -> dict:
 
 _last_session_id: str = ""
 _last_session_name: str = ""
+_last_session_token_total: int = 0
+_last_session_compressed_count: int = 0
 
 
 def get_last_session_id() -> str:
@@ -1134,6 +1162,16 @@ def get_last_session_id() -> str:
 def get_last_session_name() -> str:
     """Return the session name after the last process_for_vscode call."""
     return _last_session_name
+
+
+def get_last_session_token_total() -> int:
+    """Return cumulative session token usage after the last process_for_vscode call."""
+    return _last_session_token_total
+
+
+def get_last_session_compressed_count() -> int:
+    """Return total messages compressed in the current session."""
+    return _last_session_compressed_count
 
 
 def build_vscode_system_prompt(
@@ -1211,14 +1249,29 @@ def build_vscode_system_prompt(
             if lines:
                 project_context_section = "\nKnown projects (summaries for cross-project questions):\n" + "\n".join(lines)
 
-    # Recent session messages (last 20)
+    # Phase 16: split messages into leading summary blocks + regular messages
     history_text = ""
     if session_messages:
-        recent = session_messages[-20:]
-        history_text = "\n\nRecent conversation history:\n"
+        summary_blocks = []
+        regular_msgs = []
+        for msg in session_messages:
+            if msg.get("role") == "summary" and not regular_msgs:
+                summary_blocks.append(msg)
+            else:
+                regular_msgs.append(msg)
+
+        history_text = "\n\nConversation history:\n"
+        # Render compressed summary blocks first
+        for sb in summary_blocks:
+            count = sb.get("compressed_count", 0)
+            count_str = f" ({count} messages)" if count else ""
+            history_text += f"[Earlier context{count_str}: {sb['content'][:500]}]\n\n"
+
+        # Then render the last 20 regular messages
+        recent = regular_msgs[-20:]
         name = user["name"] or "User"
         for msg in recent:
-            r = msg["role"]
+            r = msg.get("role", "")
             if r == "user":
                 role_label = name
             elif r == "tool":
@@ -1769,6 +1822,11 @@ def process_for_vscode(
             update_session_name(session_id, workspace_root, is_global, better)
             current_name = better[:80]
     _last_session_name = current_name
+
+    # Phase 16: expose session token/compression data for /chat response
+    global _last_session_token_total, _last_session_compressed_count
+    _last_session_token_total = (updated_sess or {}).get("token_total", 0)
+    _last_session_compressed_count = (updated_sess or {}).get("compressed_count", 0)
 
     return final_text
 

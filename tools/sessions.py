@@ -135,9 +135,24 @@ def delete_session(session_id: str, workspace_root: str, is_global: bool) -> boo
         if os.path.exists(path):
             os.remove(path)
             return True
+        # Fallback: workspace_root may be a hash dir name (not the real path) when
+        # the session was created with an empty workspace_root. Scan all project dirs.
+        if not is_global:
+            projects_root = os.path.join(sessions_dir(), "projects")
+            if os.path.isdir(projects_root):
+                for hash_dir in os.scandir(projects_root):
+                    if hash_dir.is_dir():
+                        candidate = os.path.join(hash_dir.path, f"{session_id}.json")
+                        if os.path.exists(candidate):
+                            os.remove(candidate)
+                            return True
         return False
     except Exception:
         return False
+
+
+_COMPRESSION_THRESHOLD = 80   # compress when message count exceeds this
+_COMPRESSION_BATCH = 40       # number of oldest messages to compress at once
 
 
 def append_message(
@@ -150,7 +165,8 @@ def append_message(
 ) -> Optional[dict]:
     """
     Append a message to a session and save.
-    Keeps at most the last 100 messages.
+    Phase 16: when message count exceeds 80, compress the oldest 40 messages
+    into a single summary block via Haiku instead of silently dropping them.
     Returns the updated session dict, or None if not found.
     """
     session = get_session(session_id, workspace_root, is_global)
@@ -161,7 +177,26 @@ def append_message(
         "content": content,
         "ts": _now_iso(),
     })
-    session["messages"] = session["messages"][-100:]
+
+    # Phase 16: compress oldest batch when threshold exceeded
+    if len(session["messages"]) > _COMPRESSION_THRESHOLD:
+        batch = session["messages"][:_COMPRESSION_BATCH]
+        summary_text = _summarize_for_compression(batch)
+        if not summary_text:
+            summary_text = (
+                f"[{_COMPRESSION_BATCH} earlier messages — summarization unavailable]"
+            )
+        summary_msg = {
+            "role": "summary",
+            "content": summary_text,
+            "ts": _now_iso(),
+            "compressed_count": _COMPRESSION_BATCH,
+        }
+        session["messages"] = [summary_msg] + session["messages"][_COMPRESSION_BATCH:]
+        session["compressed_count"] = (
+            session.get("compressed_count", 0) + _COMPRESSION_BATCH
+        )
+
     session["updated_at"] = _now_iso()
     session["token_total"] = session.get("token_total", 0) + token_count
     save_session(session)
@@ -431,6 +466,41 @@ def generate_better_name(messages: list) -> str:
 
 
 # ── Private Haiku helpers ─────────────────────────────────────────────────────
+
+def _summarize_for_compression(messages: list) -> str:
+    """
+    Phase 16 — Summarise a batch of messages for compression into a single block.
+    Handles mixed roles including existing summary blocks.
+    Returns '' on failure (caller provides fallback text).
+    """
+    try:
+        import anthropic
+        from config import ANTHROPIC_API_KEY, MODEL_HAIKU
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        parts = []
+        for m in messages:
+            r = m.get("role", "")
+            if r == "summary":
+                parts.append(f"[Earlier context: {m['content'][:300]}]")
+            elif r == "user":
+                parts.append(f"USER: {m['content'][:200]}")
+            elif r == "assistant":
+                parts.append(f"JARVIS: {m['content'][:200]}")
+            # skip tool messages — noise
+        excerpt = "\n".join(parts)
+        resp = client.messages.create(
+            model=MODEL_HAIKU,
+            max_tokens=250,
+            system=(
+                "Summarise these conversation messages in 3-5 sentences. "
+                "Capture key decisions, code changes, and outcomes. Be factual. No filler."
+            ),
+            messages=[{"role": "user", "content": excerpt}],
+        )
+        return resp.content[0].text.strip()
+    except Exception:
+        return ""
+
 
 def _generate_session_summary(messages: list) -> str:
     """Summarise a session in 2-3 sentences using Haiku. Returns '' on failure."""

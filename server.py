@@ -18,6 +18,7 @@ from orchestrator import (
     process_for_vscode, process_briefing,
     get_last_files_written, get_pending_commands, run_single_command, kill_command,
     get_last_session_id, get_last_session_name,
+    get_last_session_token_total, get_last_session_compressed_count,
     start_vscode_agent_job,
 )
 from tools.sessions import (
@@ -69,7 +70,17 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
         qs     = parse_qs(parsed.query)
 
         if path == "/status":
-            self._send_json(200, {"status": "running", "version": "phase15"})
+            # Phase 16: optionally include session token data
+            status_data: dict = {"status": "running", "version": "phase16"}
+            session_id     = unquote(qs.get("session_id", [""])[0])
+            workspace_root = unquote(qs.get("workspace_root", [""])[0])
+            is_global      = qs.get("is_global", ["0"])[0] == "1"
+            if session_id and workspace_root:
+                sess = get_session(session_id, workspace_root, is_global)
+                if sess:
+                    status_data["session_tokens_used"] = sess.get("token_total", 0)
+                    status_data["session_compressed_count"] = sess.get("compressed_count", 0)
+            self._send_json(200, status_data)
 
         elif path == "/briefing":
             self._send_json(200, {"briefing": process_briefing()})
@@ -194,6 +205,8 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     "commands_to_run": get_pending_commands(),
                     "session_id": get_last_session_id(),
                     "session_name": get_last_session_name(),
+                    "session_token_total": get_last_session_token_total(),
+                    "compressed_count": get_last_session_compressed_count(),
                 })
 
             except json.JSONDecodeError:
