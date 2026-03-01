@@ -258,12 +258,17 @@ class JarvisViewProvider {
     }
     async _loadAllSessions() {
         try {
-            const res = await fetch(`${JARVIS_SERVER}/sessions/list`);
-            if (!res.ok) {
+            const [sessRes, histRes] = await Promise.all([
+                fetch(`${JARVIS_SERVER}/sessions/list`),
+                fetch(`${JARVIS_SERVER}/agents/history`).catch(() => null),
+            ]);
+            if (!sessRes.ok) {
                 return;
             }
-            const data = await res.json();
-            this._post('sessionsListLoaded', '', { sessionsData: data });
+            const data = await sessRes.json();
+            const histData = (histRes?.ok ? await histRes.json() : null);
+            const jobHistory = histData?.['jobs'] ?? [];
+            this._post('sessionsListLoaded', '', { sessionsData: data, jobHistory });
         }
         catch {
             // best-effort
@@ -694,6 +699,45 @@ class JarvisViewProvider {
   }
   .session-item:hover .session-delete-btn { display: flex; align-items: center; }
   .session-delete-btn:hover { color: #f48771; background: rgba(244,135,113,0.1); }
+
+  /* ── Past Jobs section ── */
+  #past-jobs-section {
+    flex-shrink: 0;
+    border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+  }
+  #past-jobs-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.7;
+    user-select: none;
+  }
+  #past-jobs-toggle:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  #past-jobs-chevron { font-size: 9px; }
+  #past-jobs-list { max-height: 160px; overflow-y: auto; }
+  .past-job-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 12px 5px 14px;
+    font-size: 11px;
+  }
+  .pj-icon { flex-shrink: 0; font-size: 11px; line-height: 1.4; }
+  .pj-info { min-width: 0; }
+  .pj-task {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .pj-meta { font-size: 10px; opacity: 0.45; margin-top: 1px; }
 
   /* ── Sessions search ── */
   #sessions-search-wrap {
@@ -1385,6 +1429,14 @@ class JarvisViewProvider {
 
   <div id="sessions-list-container"></div>
 
+  <div id="past-jobs-section" style="display:none">
+    <div id="past-jobs-toggle">
+      <span>Past Agent Jobs</span>
+      <span id="past-jobs-chevron">&#x25BC;</span>
+    </div>
+    <div id="past-jobs-list" style="display:none"></div>
+  </div>
+
 </div><!-- end #sessions-view -->
 
 <script>
@@ -2005,6 +2057,47 @@ class JarvisViewProvider {
     return item;
   }
 
+  // ── Past Jobs section ──
+  const pastJobsSection  = document.getElementById('past-jobs-section');
+  const pastJobsToggle   = document.getElementById('past-jobs-toggle');
+  const pastJobsList     = document.getElementById('past-jobs-list');
+  const pastJobsChevron  = document.getElementById('past-jobs-chevron');
+  let pastJobsCollapsed  = true;
+
+  if (pastJobsToggle) {
+    pastJobsToggle.addEventListener('click', () => {
+      pastJobsCollapsed = !pastJobsCollapsed;
+      if (pastJobsList) pastJobsList.style.display = pastJobsCollapsed ? 'none' : 'block';
+      if (pastJobsChevron) pastJobsChevron.textContent = pastJobsCollapsed ? '\u25BC' : '\u25B2';
+    });
+  }
+
+  function populatePastJobs(jobs) {
+    if (!pastJobsSection || !pastJobsList) return;
+    if (!jobs || jobs.length === 0) {
+      pastJobsSection.style.display = 'none';
+      return;
+    }
+    pastJobsSection.style.display = 'block';
+    pastJobsList.innerHTML = '';
+    jobs.forEach(job => {
+      const item = document.createElement('div');
+      item.className = 'past-job-item';
+      const icon = job.outcome === 'success' ? '\u2705' : '\u274C';
+      const ts = job.finished_at ? new Date(job.finished_at * 1000).toISOString().slice(0, 19) : '';
+      const timeStr = ts ? formatRelativeTime(ts) : '';
+      const agentCount = (job.agents || []).length;
+      const meta = [agentCount + ' agent' + (agentCount !== 1 ? 's' : ''), timeStr].filter(Boolean).join(' \u00b7 ');
+      item.innerHTML =
+        '<span class="pj-icon">' + icon + '</span>' +
+        '<div class="pj-info">' +
+          '<div class="pj-task">' + escHtml(job.task || '(unknown task)') + '</div>' +
+          '<div class="pj-meta">' + escHtml(meta) + '</div>' +
+        '</div>';
+      pastJobsList.appendChild(item);
+    });
+  }
+
   function clearMessages() {
     messages.innerHTML = '';
     sessionTotalTokens = 0;
@@ -2101,7 +2194,7 @@ class JarvisViewProvider {
   window.addEventListener('message', (e) => {
     const msg = e.data;
     const { command, text, tokens, filesWritten, commandsToRun,
-            card_id, success, output, session, sessionsData, sessionName,
+            card_id, success, output, session, sessionsData, jobHistory, sessionName,
             rootPath, job, sessionTokenTotal, compressedCount } = msg;
 
     if (command === 'commandResult') {
@@ -2162,6 +2255,7 @@ class JarvisViewProvider {
 
     if (command === 'sessionsListLoaded') {
       populateSessionsList(sessionsData);
+      populatePastJobs(jobHistory || []);
       return;
     }
 

@@ -18,12 +18,15 @@ from unittest.mock import patch, MagicMock
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def clear_jobs():
-    """Reset the job store before each test."""
+def clear_jobs(tmp_path):
+    """Reset the job store and redirect history file before each test."""
     import tools.agent_jobs as aj
     aj._jobs.clear()
+    orig_history = aj._HISTORY_FILE
+    aj._HISTORY_FILE = str(tmp_path / "agent_jobs_history.json")
     yield
     aj._jobs.clear()
+    aj._HISTORY_FILE = orig_history
 
 
 @pytest.fixture

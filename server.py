@@ -71,7 +71,7 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
 
         if path == "/status":
             # Phase 16: optionally include session token data
-            status_data: dict = {"status": "running", "version": "phase16"}
+            status_data: dict = {"status": "running", "version": "phase17"}
             session_id     = unquote(qs.get("session_id", [""])[0])
             workspace_root = unquote(qs.get("workspace_root", [""])[0])
             is_global      = qs.get("is_global", ["0"])[0] == "1"
@@ -116,6 +116,11 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             workspace_root = unquote(qs.get("workspace_root", [""])[0])
             from tools.notifications import get_notifications
             self._send_json(200, {"notifications": get_notifications(workspace_root)})
+
+        elif path == "/agents/history":
+            # Phase 17 — return completed job history from disk
+            from tools.agent_jobs import list_job_history
+            self._send_json(200, {"jobs": list_job_history()})
 
         elif path == "/agents/status":
             # Phase 12 — poll for agent job progress
@@ -378,6 +383,12 @@ def start_server(port: int = None, block: bool = True) -> HTTPServer:
     """
     port = port or SERVER_PORT
     server = JarvisHTTPServer(("localhost", port), JarvisHTTPHandler)
+    # Phase 17: load persisted notifications from disk
+    try:
+        from tools.notifications import load_notifications
+        load_notifications()
+    except Exception:
+        pass
     # Phase 15: start background watcher (daemon thread — safe to skip in tests)
     try:
         from tools.watcher import start_watcher

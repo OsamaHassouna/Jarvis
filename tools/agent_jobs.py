@@ -1,15 +1,21 @@
 """
 tools/agent_jobs.py — Phase 12: In-memory agent job store.
+Phase 17: Completed jobs persisted to disk in agent_jobs_history.json.
 
 Tracks the state of every agent execution started from VS Code.
 Server threads write updates; /agents/status endpoint reads them.
-No disk I/O — state lives only while server.py is running.
 """
 
+import json
+import os
 import threading
 import time
 import uuid
 from typing import Optional
+
+_JARVIS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HISTORY_FILE = os.path.join(_JARVIS_ROOT, "sessions", "agent_jobs_history.json")
+_MAX_HISTORY = 100
 
 # job_id -> job_state dict
 _jobs: dict = {}
@@ -22,13 +28,14 @@ def generate_job_id() -> str:
     return "job_" + uuid.uuid4().hex[:8]
 
 
-def create_job(job_id: str, workspace_root: str) -> dict:
+def create_job(job_id: str, workspace_root: str, task: str = "") -> dict:
     """
     Register a new job before the background thread starts.
     Agents are populated later once breakdown_into_agents() returns.
     """
     job = {
         "job_id": job_id,
+        "task": task,
         "status": "starting",   # starting | running | done | failed
         "workspace_root": workspace_root,
         "started_at": time.time(),
@@ -48,7 +55,6 @@ def register_agents(job_id: str, agent_defs: list) -> None:
         job = _jobs.get(job_id)
         if not job:
             return
-        # Reset so we get the real defs (not the placeholder from create_job)
         job["agents"] = {
             a["id"]: {
                 "id": a["id"],
@@ -69,6 +75,7 @@ def register_agents(job_id: str, agent_defs: list) -> None:
 def update_job_status(job_id: str, status: str,
                       summary: Optional[dict] = None,
                       error: Optional[str] = None) -> None:
+    job_snapshot: Optional[dict] = None
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -80,6 +87,13 @@ def update_job_status(job_id: str, status: str,
             job["error"] = error
         if status in ("done", "failed"):
             job["finished_at"] = time.time()
+            job_snapshot = {k: v for k, v in job.items() if k != "agents"}
+            job_snapshot["agents"] = {
+                aid: {"id": aid, "task": a["task"], "status": a["status"]}
+                for aid, a in job["agents"].items()
+            }
+    if job_snapshot:
+        _append_to_history(job_snapshot)
 
 
 def update_agent_status(job_id: str, agent_id: str, **kwargs) -> None:
@@ -105,7 +119,6 @@ def update_agent_status(job_id: str, agent_id: str, **kwargs) -> None:
 def get_job(job_id: str) -> Optional[dict]:
     with _lock:
         job = _jobs.get(job_id)
-        # Return a shallow-ish copy to avoid external mutation
         return dict(job) if job else None
 
 
@@ -113,6 +126,53 @@ def list_active_jobs() -> list:
     with _lock:
         return [dict(j) for j in _jobs.values()
                 if j["status"] in ("starting", "running")]
+
+
+# ── History ───────────────────────────────────────────────────────────────────
+
+def _append_to_history(job_snapshot: dict) -> None:
+    """Append a completed job to the history file, trim to _MAX_HISTORY."""
+    try:
+        os.makedirs(os.path.dirname(_HISTORY_FILE), exist_ok=True)
+        try:
+            with open(_HISTORY_FILE, encoding="utf-8") as f:
+                history = json.load(f)
+            if not isinstance(history, list):
+                history = []
+        except (FileNotFoundError, json.JSONDecodeError):
+            history = []
+
+        agents_list = list(job_snapshot.get("agents", {}).values())
+        summary = job_snapshot.get("summary") or {}
+        record = {
+            "job_id": job_snapshot["job_id"],
+            "task": job_snapshot.get("task", ""),
+            "workspace": job_snapshot.get("workspace_root", ""),
+            "agents": agents_list,
+            "outcome": "success" if job_snapshot["status"] == "done" else "failed",
+            "started_at": job_snapshot.get("started_at"),
+            "finished_at": job_snapshot.get("finished_at"),
+            "total_tokens": summary.get("total_tokens", 0),
+        }
+        history.append(record)
+        # Keep only the most recent _MAX_HISTORY entries
+        history = history[-_MAX_HISTORY:]
+        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f)
+    except Exception:
+        pass
+
+
+def list_job_history(limit: int = 20) -> list:
+    """Return up to `limit` most-recently-completed jobs from history file."""
+    try:
+        with open(_HISTORY_FILE, encoding="utf-8") as f:
+            history = json.load(f)
+        if not isinstance(history, list):
+            return []
+        return history[-limit:][::-1]   # newest first
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 
 # ── Maintenance ───────────────────────────────────────────────────────────────

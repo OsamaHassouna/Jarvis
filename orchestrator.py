@@ -1917,7 +1917,7 @@ def start_vscode_agent_job(user_input: str, workspace_root: str) -> str:
     import threading as _threading
     from tools.agent_jobs import create_job, generate_job_id
     job_id = generate_job_id()
-    create_job(job_id, workspace_root)
+    create_job(job_id, workspace_root, user_input)
     t = _threading.Thread(
         target=handle_complex_task_vscode,
         args=(user_input, workspace_root, job_id),

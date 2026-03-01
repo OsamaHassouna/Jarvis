@@ -54,7 +54,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 17 — Persistence & History ✦ START HERE
+## Phase 17 — Persistence & History ✅ COMPLETE
 
 **Goal:** Server restarts don't wipe state. Full audit trail for agent jobs.
 
@@ -82,7 +82,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 18 — Session Intelligence
+## Phase 18 — Session Intelligence ✦ START HERE
 
 **Goal:** Find and use past sessions. Export them.
 
@@ -198,7 +198,7 @@ Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20 → (Phase 14 if ne
 |-------|-----------|---------------|
 | Current (end of P15) | — | 275 |
 | Phase 16 | 15 | 290 ✅ |
-| Phase 17 | ~11 | ~300 |
+| Phase 17 | 16 | 306 ✅ |
 | Phase 18 | ~9  | ~309 |
 | Phase 19 | ~11 | ~320 |
 | Phase 20 | ~9  | ~329 |
