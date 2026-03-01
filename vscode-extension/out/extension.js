@@ -45,6 +45,10 @@ function activate(context) {
         }
         vscode.commands.executeCommand('jarvis.view.focus');
         jarvisPanel_1.JarvisViewProvider.prefillInput(`Explain this code:\n\`\`\`\n${sel}\n\`\`\``);
+    }), 
+    // Phase 18: Quick-pick session switcher
+    vscode.commands.registerCommand('jarvis.sessionPicker', async () => {
+        await provider.sessionQuickPick();
     }));
     startServer(context);
 }

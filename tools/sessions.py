@@ -312,6 +312,72 @@ def list_all_sessions() -> dict:
     return result
 
 
+def search_sessions(query: str, workspace_root: str = "") -> list:
+    """
+    Phase 18 — Search sessions by name, summary, or message content.
+    If workspace_root is given, only searches sessions for that project plus global.
+    Returns list of {session, snippet, match_field} sorted by updated_at desc.
+    """
+    query_lower = query.strip().lower()
+    if not query_lower:
+        return []
+
+    results = []
+
+    def _check_session(sess: dict) -> bool:
+        """Return (matched, snippet, field) or False."""
+        name = (sess.get("name") or "").lower()
+        if query_lower in name:
+            return sess.get("name", ""), "name"
+        summary = (sess.get("summary") or "").lower()
+        if query_lower in summary:
+            snippet = sess.get("summary", "")[:100]
+            return snippet, "summary"
+        msgs = sess.get("messages") or []
+        for m in msgs[-5:]:
+            content = (m.get("content") or "").lower()
+            if query_lower in content:
+                raw = m.get("content", "")
+                idx = raw.lower().find(query_lower)
+                start = max(0, idx - 30)
+                snippet = ("…" if start > 0 else "") + raw[start:idx + 60].replace("\n", " ") + "…"
+                return snippet, "message"
+        return False, None
+
+    def _scan_dir(directory: str, ws_root: str, is_global: bool):
+        for entry in os.scandir(directory):
+            if not entry.name.endswith(".json") or entry.name.startswith("_"):
+                continue
+            sess = _read_json(entry.path)
+            if not sess or "id" not in sess:
+                continue
+            snippet, field = _check_session(sess)
+            if field:
+                results.append({
+                    "session": sess,
+                    "snippet": snippet,
+                    "match_field": field,
+                })
+
+    # Global sessions always searched
+    _scan_dir(_global_dir(), "", True)
+
+    projects_root = os.path.join(sessions_dir(), "projects")
+    if os.path.isdir(projects_root):
+        if workspace_root:
+            # Only this project
+            proj_dir = _project_sessions_dir(workspace_root)
+            _scan_dir(proj_dir, workspace_root, False)
+        else:
+            # All projects
+            for hash_dir in os.scandir(projects_root):
+                if hash_dir.is_dir():
+                    _scan_dir(hash_dir.path, "", False)
+
+    results.sort(key=lambda r: r["session"].get("updated_at", ""), reverse=True)
+    return results
+
+
 def _load_session_files(directory: str, workspace_root: str, is_global: bool) -> list:
     sessions = []
     if not os.path.isdir(directory):
@@ -428,6 +494,42 @@ def update_project_summary(workspace_root: str, session: dict) -> None:
 
 
 # ── Auto-naming ───────────────────────────────────────────────────────────────
+
+def export_session_markdown(session: dict) -> str:
+    """
+    Phase 18 — Render a session as a clean Markdown transcript.
+    Returns the markdown string.
+    """
+    lines = []
+    name = session.get("name") or "(untitled)"
+    lines.append(f"# {name}\n")
+
+    created = (session.get("created_at") or "")[:10]
+    updated = (session.get("updated_at") or "")[:10]
+    if created:
+        date_range = created if created == updated else f"{created} → {updated}"
+        lines.append(f"*{date_range}*\n")
+
+    summary = session.get("summary", "")
+    if summary:
+        lines.append(f"> {summary}\n")
+
+    lines.append("---\n")
+
+    for msg in session.get("messages", []):
+        role = msg.get("role", "")
+        content = (msg.get("content") or "").strip()
+        if role == "summary":
+            lines.append(f"_[Earlier context: {content}]_\n")
+        elif role == "user":
+            lines.append(f"**You:** {content}\n")
+        elif role == "assistant":
+            lines.append(f"**Jarvis:** {content}\n")
+        elif role == "tool":
+            lines.append(f"_[Tool: {content[:200]}]_\n")
+
+    return "\n".join(lines)
+
 
 def auto_name_from_first_message(content: str) -> str:
     """Generate a quick session name from the first user message. No API call."""

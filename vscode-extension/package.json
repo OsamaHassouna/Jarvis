@@ -49,6 +49,10 @@
       {
         "command": "jarvis.restartServer",
         "title": "Jarvis: Restart Server"
+      },
+      {
+        "command": "jarvis.sessionPicker",
+        "title": "Jarvis: Switch Session"
       }
     ],
     "keybindings": [
@@ -62,6 +66,11 @@
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "editorHasSelection"
+      },
+      {
+        "command": "jarvis.sessionPicker",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s"
       }
     ],
     "menus": {

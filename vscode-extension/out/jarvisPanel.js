@@ -94,6 +94,12 @@ class JarvisViewProvider {
                 }
                 catch { /* file may not exist yet */ }
             }
+            else if (msg.command === 'exportSession') {
+                await this._exportSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+            }
+            else if (msg.command === 'searchSessions') {
+                await this._searchSessions(msg.query, msg.workspaceRoot ?? '');
+            }
         }, null, this._disposables);
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
@@ -301,6 +307,98 @@ class JarvisViewProvider {
                     name,
                 }),
             });
+        }
+        catch {
+            // best-effort
+        }
+    }
+    // Phase 18: Export a session as markdown (opens save dialog)
+    async _exportSession(sessionId, workspaceRoot, isGlobal) {
+        try {
+            const url = `${JARVIS_SERVER}/sessions/export?session_id=${encodeURIComponent(sessionId)}&workspace_root=${encodeURIComponent(workspaceRoot)}&is_global=${isGlobal ? '1' : '0'}&format=markdown`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                vscode.window.showErrorMessage('Jarvis: Could not export session.');
+                return;
+            }
+            const data = await res.json();
+            const defaultUri = vscode.Uri.file((workspaceRoot || (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '')) +
+                '/' + (data.filename || 'session.md'));
+            const dest = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { Markdown: ['md'] },
+                title: 'Export Jarvis Session',
+            });
+            if (!dest) {
+                return;
+            }
+            await vscode.workspace.fs.writeFile(dest, Buffer.from(data.markdown, 'utf8'));
+            vscode.window.showInformationMessage(`Session exported to ${dest.fsPath.split(/[\\/]/).pop()}`);
+        }
+        catch {
+            vscode.window.showErrorMessage('Jarvis: Export failed.');
+        }
+    }
+    // Phase 18: Server-side session search
+    async _searchSessions(query, workspaceRoot) {
+        if (!query.trim()) {
+            // Empty query → reload full list
+            await this._loadAllSessions();
+            return;
+        }
+        try {
+            const url = `${JARVIS_SERVER}/sessions/search?q=${encodeURIComponent(query)}&workspace=${encodeURIComponent(workspaceRoot)}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            this._post('searchResultsLoaded', '', { results: data.results, query: data.query });
+        }
+        catch {
+            // best-effort
+        }
+    }
+    // Phase 18: Native VS Code quick-pick for sessions
+    async sessionQuickPick() {
+        try {
+            const workspaceRoot = this._getWorkspaceRoot();
+            const res = await fetch(`${JARVIS_SERVER}/sessions/list`);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            const items = [];
+            const addSessions = (sessions, wsRoot, isGlobal) => {
+                sessions.forEach(s => {
+                    const msgs = s['messages'] ?? [];
+                    items.push({
+                        label: s['name'] || '(untitled)',
+                        description: `${msgs.length} msg${msgs.length !== 1 ? 's' : ''}`,
+                        detail: isGlobal ? 'Global' : (s['project_name'] || wsRoot.split(/[\\/]/).pop() || wsRoot),
+                        sessionId: s['id'],
+                        wsRoot,
+                        isGlobal,
+                    });
+                });
+            };
+            addSessions(data['global'] ?? [], '', true);
+            const projects = data['projects'] ?? {};
+            Object.entries(projects).forEach(([ws, proj]) => {
+                const p = proj;
+                addSessions(p['sessions'] ?? [], ws, false);
+            });
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select a session to load',
+                matchOnDescription: true,
+                matchOnDetail: true,
+            });
+            if (!selected) {
+                return;
+            }
+            await this._loadSession(selected.sessionId, selected.wsRoot, selected.isGlobal);
+            // Bring panel into view
+            await vscode.commands.executeCommand('jarvis.view.focus');
         }
         catch {
             // best-effort
@@ -684,7 +782,16 @@ class JarvisViewProvider {
     font-size: 10px;
     opacity: 0.45;
   }
-  .session-delete-btn {
+  .session-item-snippet {
+    font-size: 10px;
+    opacity: 0.6;
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 1px;
+  }
+  .session-export-btn, .session-delete-btn {
     display: none;
     background: none;
     border: none;
@@ -697,7 +804,9 @@ class JarvisViewProvider {
     flex-shrink: 0;
     transition: color 0.1s, background 0.1s;
   }
+  .session-item:hover .session-export-btn,
   .session-item:hover .session-delete-btn { display: flex; align-items: center; }
+  .session-export-btn:hover { color: #4ec9b0; background: rgba(78,201,176,0.1); }
   .session-delete-btn:hover { color: #f48771; background: rgba(244,135,113,0.1); }
 
   /* ── Past Jobs section ── */
@@ -1863,32 +1972,20 @@ class JarvisViewProvider {
     });
   });
 
-  // ── Sessions search / filter ──
+  // ── Sessions search — server-side, debounced ──
+  let _searchTimer = null;
   sessSearch.addEventListener('input', () => {
-    const q = sessSearch.value.trim().toLowerCase();
-    let lastGroupLabel = null;
-    let groupHasVisible = false;
-
-    sessList.childNodes.forEach(node => {
-      if (!(node instanceof Element)) return;
-      if (node.classList.contains('session-group-label')) {
-        // Decide visibility of previous group label
-        if (lastGroupLabel) {
-          lastGroupLabel.style.display = groupHasVisible ? '' : 'none';
-        }
-        lastGroupLabel = node;
-        groupHasVisible = false;
-      } else if (node.classList.contains('session-item')) {
-        const name = (node.querySelector('.session-item-name')?.textContent || '').toLowerCase();
-        const visible = !q || name.includes(q);
-        node.style.display = visible ? '' : 'none';
-        if (visible) groupHasVisible = true;
-      }
-    });
-    // Handle last group label
-    if (lastGroupLabel) {
-      lastGroupLabel.style.display = groupHasVisible ? '' : 'none';
+    clearTimeout(_searchTimer);
+    const q = sessSearch.value.trim();
+    if (!q) {
+      // Empty → reload full list immediately
+      vscode.postMessage({ command: 'openSessionDrawer' });
+      return;
     }
+    _searchTimer = setTimeout(() => {
+      const workspaceRoot = _currentWorkspaceRoot || '';
+      vscode.postMessage({ command: 'searchSessions', query: q, workspaceRoot });
+    }, 300);
   });
 
   // ── History button → sessions view ──
@@ -2025,6 +2122,7 @@ class JarvisViewProvider {
         '<div class="session-item-name">' + escHtml(sess.name || '(untitled)') + '</div>' +
         '<div class="session-item-time">' + escHtml(subLine) + '</div>' +
       '</div>' +
+      '<button class="session-export-btn" title="Export as Markdown">&#x21A7;</button>' +
       '<button class="session-delete-btn" title="Delete session">&#x1F5D1;</button>';
 
     // Click on item body → load session
@@ -2032,6 +2130,13 @@ class JarvisViewProvider {
       const effectiveWsRoot = sess.workspace_root || workspaceRoot;
       vscode.postMessage({ command: 'loadSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
       showChatView();
+    });
+
+    // Click on export button → export to markdown file
+    item.querySelector('.session-export-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const effectiveWsRoot = sess.workspace_root || workspaceRoot;
+      vscode.postMessage({ command: 'exportSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
     });
 
     // Click on delete button → delete + remove from DOM
@@ -2095,6 +2200,43 @@ class JarvisViewProvider {
           '<div class="pj-meta">' + escHtml(meta) + '</div>' +
         '</div>';
       pastJobsList.appendChild(item);
+    });
+  }
+
+  function _renderSearchResults(results) {
+    sessList.innerHTML = '';
+    if (!results || results.length === 0) {
+      sessList.innerHTML = '<div style="padding:16px;font-size:11px;opacity:0.5;text-align:center">No matches found</div>';
+      return;
+    }
+    results.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'session-item' + (r.id === currentSessionId ? ' active' : '');
+      const timeStr = formatRelativeTime(r.updated_at);
+      const snippet = r.snippet ? '<div class="session-item-snippet">' + escHtml(r.snippet) + '</div>' : '';
+      item.innerHTML =
+        '<div class="session-item-info">' +
+          '<div class="session-item-name">' + escHtml(r.name || '(untitled)') + '</div>' +
+          snippet +
+          '<div class="session-item-time">' + escHtml(timeStr) + '</div>' +
+        '</div>' +
+        '<button class="session-export-btn" title="Export as Markdown">&#x21A7;</button>' +
+        '<button class="session-delete-btn" title="Delete session">&#x1F5D1;</button>';
+
+      item.querySelector('.session-item-info').addEventListener('click', () => {
+        vscode.postMessage({ command: 'loadSession', sessionId: r.id, workspaceRoot: r.workspace_root || '', isGlobal: r.is_global });
+        showChatView();
+      });
+      item.querySelector('.session-export-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ command: 'exportSession', sessionId: r.id, workspaceRoot: r.workspace_root || '', isGlobal: r.is_global });
+      });
+      item.querySelector('.session-delete-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ command: 'deleteSession', sessionId: r.id, workspaceRoot: r.workspace_root || '', isGlobal: r.is_global });
+        item.remove();
+      });
+      sessList.appendChild(item);
     });
   }
 
@@ -2195,7 +2337,7 @@ class JarvisViewProvider {
     const msg = e.data;
     const { command, text, tokens, filesWritten, commandsToRun,
             card_id, success, output, session, sessionsData, jobHistory, sessionName,
-            rootPath, job, sessionTokenTotal, compressedCount } = msg;
+            rootPath, job, sessionTokenTotal, compressedCount, results } = msg;
 
     if (command === 'commandResult') {
       const card = document.getElementById(card_id);
@@ -2256,6 +2398,11 @@ class JarvisViewProvider {
     if (command === 'sessionsListLoaded') {
       populateSessionsList(sessionsData);
       populatePastJobs(jobHistory || []);
+      return;
+    }
+
+    if (command === 'searchResultsLoaded') {
+      _renderSearchResults(msg.results || []);
       return;
     }
 

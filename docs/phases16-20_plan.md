@@ -82,7 +82,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 18 — Session Intelligence ✦ START HERE
+## Phase 18 — Session Intelligence ✅ COMPLETE
 
 **Goal:** Find and use past sessions. Export them.
 
@@ -111,7 +111,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 19 — Configurable Watcher & Smart Notifications
+## Phase 19 — Configurable Watcher & Smart Notifications ✦ START HERE
 
 **Goal:** Watcher thresholds tunable per workspace. Smarter detectors.
 
@@ -199,6 +199,6 @@ Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20 → (Phase 14 if ne
 | Current (end of P15) | — | 275 |
 | Phase 16 | 15 | 290 ✅ |
 | Phase 17 | 16 | 306 ✅ |
-| Phase 18 | ~9  | ~309 |
+| Phase 18 | 14  | 320 ✅ |
 | Phase 19 | ~11 | ~320 |
 | Phase 20 | ~9  | ~329 |

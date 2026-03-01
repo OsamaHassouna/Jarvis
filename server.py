@@ -25,7 +25,7 @@ from tools.sessions import (
     create_session, get_session, list_all_sessions,
     set_active_session, close_session, delete_session,
     get_active_session_id, append_message as session_append_message,
-    update_session_name,
+    update_session_name, search_sessions, export_session_markdown,
 )
 from tools.token_tracker import tracker
 
@@ -71,7 +71,7 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
 
         if path == "/status":
             # Phase 16: optionally include session token data
-            status_data: dict = {"status": "running", "version": "phase17"}
+            status_data: dict = {"status": "running", "version": "phase18"}
             session_id     = unquote(qs.get("session_id", [""])[0])
             workspace_root = unquote(qs.get("workspace_root", [""])[0])
             is_global      = qs.get("is_global", ["0"])[0] == "1"
@@ -110,6 +110,49 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 return
             set_active_session(session_id, workspace_root, is_global)
             self._send_json(200, {"session": sess})
+
+        elif path == "/sessions/search":
+            # Phase 18 — full-text search across sessions
+            q              = unquote(qs.get("q", [""])[0])
+            workspace_root = unquote(qs.get("workspace", [""])[0])
+            if not q:
+                self._send_json(400, {"error": "q is required"})
+                return
+            results = search_sessions(q, workspace_root)
+            # Strip full message list from response — keep only metadata + snippet
+            slim = []
+            for r in results:
+                sess = r["session"]
+                slim.append({
+                    "id":           sess.get("id"),
+                    "name":         sess.get("name", ""),
+                    "workspace_root": sess.get("workspace_root", ""),
+                    "is_global":    sess.get("is_global", False),
+                    "updated_at":   sess.get("updated_at", ""),
+                    "message_count": len(sess.get("messages", [])),
+                    "snippet":      r["snippet"],
+                    "match_field":  r["match_field"],
+                })
+            self._send_json(200, {"results": slim, "query": q})
+
+        elif path == "/sessions/export":
+            # Phase 18 — export a session as markdown
+            session_id     = unquote(qs.get("session_id", [""])[0])
+            workspace_root = unquote(qs.get("workspace_root", [""])[0])
+            is_global      = qs.get("is_global", ["0"])[0] == "1"
+            fmt            = qs.get("format", ["markdown"])[0]
+            if not session_id:
+                self._send_json(400, {"error": "session_id is required"})
+                return
+            sess = get_session(session_id, workspace_root, is_global)
+            if sess is None:
+                self._send_json(404, {"error": "Session not found"})
+                return
+            if fmt == "markdown":
+                md = export_session_markdown(sess)
+                self._send_json(200, {"markdown": md, "filename": f"{session_id}.md"})
+            else:
+                self._send_json(400, {"error": f"Unsupported format: {fmt}"})
 
         elif path == "/notifications":
             # Phase 15 — return pending notifications for this workspace
