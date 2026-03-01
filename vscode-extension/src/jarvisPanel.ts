@@ -1363,18 +1363,30 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
     border-radius: 8px;
     padding: 4px;
-    min-width: 240px;
+    min-width: 260px;
+    max-height: 300px;
+    overflow-y: auto;
     box-shadow: 0 -4px 20px rgba(0,0,0,0.35);
     z-index: 100;
   }
   #cmd-menu.open { display: block; }
+  .cmd-group-label {
+    padding: 6px 10px 2px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.55;
+    font-weight: 600;
+    user-select: none;
+  }
   .cmd-item {
-    padding: 8px 10px;
+    padding: 6px 10px;
     border-radius: 5px;
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
   }
   .cmd-item:hover { background: var(--vscode-list-hoverBackground); }
   .cmd-name {
@@ -1509,6 +1521,73 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
   <!-- Bottom input section -->
   <div id="input-outer">
     <div id="cmd-menu">
+      <div class="cmd-group-label">Memory</div>
+      <div class="cmd-item" data-cmd="/memory">
+        <span class="cmd-name">/memory</span>
+        <span class="cmd-desc">Show memory &amp; conversation summary</span>
+      </div>
+      <div class="cmd-item" data-cmd="/memory projects">
+        <span class="cmd-name">/memory projects</span>
+        <span class="cmd-desc">List all projects in memory</span>
+      </div>
+      <div class="cmd-item" data-cmd="/memory preferences">
+        <span class="cmd-name">/memory preferences</span>
+        <span class="cmd-desc">Show saved preferences</span>
+      </div>
+      <div class="cmd-item" data-cmd="/memory clear history">
+        <span class="cmd-name">/memory clear history</span>
+        <span class="cmd-desc">Clear conversation history</span>
+      </div>
+      <div class="cmd-item" data-cmd="/memory clear projects">
+        <span class="cmd-name">/memory clear projects</span>
+        <span class="cmd-desc">Delete all projects from memory</span>
+      </div>
+      <div class="cmd-item" data-cmd="/memory delete ">
+        <span class="cmd-name">/memory delete &lt;name&gt;</span>
+        <span class="cmd-desc">Remove a specific project from memory</span>
+      </div>
+
+      <div class="cmd-group-label">Templates</div>
+      <div class="cmd-item" data-cmd="/template list">
+        <span class="cmd-name">/template list</span>
+        <span class="cmd-desc">List all saved templates</span>
+      </div>
+      <div class="cmd-item" data-cmd="/template use ">
+        <span class="cmd-name">/template use &lt;name&gt;</span>
+        <span class="cmd-desc">Run a template</span>
+      </div>
+      <div class="cmd-item" data-cmd="/template save ">
+        <span class="cmd-name">/template save &lt;name&gt;</span>
+        <span class="cmd-desc">Save current agent breakdown as template</span>
+      </div>
+      <div class="cmd-item" data-cmd="/template info ">
+        <span class="cmd-name">/template info &lt;name&gt;</span>
+        <span class="cmd-desc">Show template details and triggers</span>
+      </div>
+      <div class="cmd-item" data-cmd="/template delete ">
+        <span class="cmd-name">/template delete &lt;name&gt;</span>
+        <span class="cmd-desc">Delete a saved template</span>
+      </div>
+      <div class="cmd-item" data-cmd="/template rename ">
+        <span class="cmd-name">/template rename &lt;old&gt; &lt;new&gt;</span>
+        <span class="cmd-desc">Rename a template</span>
+      </div>
+
+      <div class="cmd-group-label">Ratings</div>
+      <div class="cmd-item" data-cmd="/rate ">
+        <span class="cmd-name">/rate &lt;1-5&gt;</span>
+        <span class="cmd-desc">Rate the last agent task (1 = bad, 5 = great)</span>
+      </div>
+      <div class="cmd-item" data-cmd="/ratings">
+        <span class="cmd-name">/ratings</span>
+        <span class="cmd-desc">View recent task ratings</span>
+      </div>
+      <div class="cmd-item" data-cmd="/ratings clear">
+        <span class="cmd-name">/ratings clear</span>
+        <span class="cmd-desc">Clear all saved ratings</span>
+      </div>
+
+      <div class="cmd-group-label">Rules</div>
       <div class="cmd-item" data-cmd="/rules">
         <span class="cmd-name">/rules</span>
         <span class="cmd-desc">Manage global rules for all conversations</span>
@@ -1517,6 +1596,8 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
         <span class="cmd-name">/project rules</span>
         <span class="cmd-desc">Manage rules for this project only</span>
       </div>
+
+      <div class="cmd-group-label">File</div>
       <div class="cmd-item" data-cmd="/attach">
         <span class="cmd-name">/attach</span>
         <span class="cmd-desc">Attach a file or image to your message</span>
@@ -1626,6 +1707,34 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 160) + 'px';
     sendBtn.disabled = !input.value.trim() || isSending;
+  });
+
+  // ── Command menu: auto-open + filter when user types / ──
+  input.addEventListener('input', () => {
+    const val = input.value;
+    const cmdItems = document.querySelectorAll('.cmd-item');
+    const groupLabels = document.querySelectorAll('.cmd-group-label');
+    if (val.startsWith('/')) {
+      const q = val.toLowerCase();
+      cmdItems.forEach(item => {
+        const cmd = (item.dataset.cmd || '').toLowerCase();
+        item.style.display = cmd.startsWith(q) ? '' : 'none';
+      });
+      groupLabels.forEach(lbl => {
+        let sib = lbl.nextElementSibling;
+        let visible = false;
+        while (sib && !sib.classList.contains('cmd-group-label')) {
+          if ((sib.style.display || '') !== 'none') visible = true;
+          sib = sib.nextElementSibling;
+        }
+        lbl.style.display = visible ? '' : 'none';
+      });
+      if (!cmdMenu.classList.contains('open')) toggleCmdMenu();
+    } else {
+      cmdItems.forEach(item => item.style.display = '');
+      groupLabels.forEach(lbl => lbl.style.display = '');
+      if (cmdMenu.classList.contains('open')) closeCmdMenu();
+    }
   });
 
   // ── Format model ID → short name ──
