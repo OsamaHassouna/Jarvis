@@ -2,7 +2,7 @@
   "name": "jarvis-assistant",
   "displayName": "Jarvis Assistant",
   "description": "Personal AI assistant — auto-starts on VS Code open, full file context",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "engines": {
     "vscode": "^1.85.0"
   },
