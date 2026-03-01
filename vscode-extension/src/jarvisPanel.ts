@@ -382,7 +382,6 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     // Phase 18: Native VS Code quick-pick for sessions
     public async sessionQuickPick(): Promise<void> {
         try {
-            const workspaceRoot = this._getWorkspaceRoot();
             const res = await fetch(`${JARVIS_SERVER}/sessions/list`);
             if (!res.ok) { return; }
             const data = await res.json() as Record<string, unknown>;
@@ -1234,13 +1233,29 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
   }
   .notif-close:hover { opacity: 1; }
 
-  /* Phase 13: rating prompt */
+  /* Phase 20: star rating UI */
   .agent-rate-prompt {
     padding: 6px 12px;
     font-size: 11px;
-    opacity: 0.65;
     border-top: 1px solid rgba(128,128,128,0.15);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .agent-rate-label {
+    opacity: 0.6;
     font-style: italic;
+  }
+  .agent-rate-stars { display: flex; gap: 2px; }
+  .agent-rate-star {
+    background: none; border: none; cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 0 1px;
+    color: rgba(255,200,50,0.35);
+    transition: color 0.1s, transform 0.1s;
+  }
+  .agent-rate-star:hover, .agent-rate-star.hovered { color: #ffc832; transform: scale(1.2); }
+  .agent-rate-done {
+    opacity: 0.55; font-size: 11px; font-style: italic;
   }
 
   .ag-running .ag-icon { color: #4ec9b0; animation: spin 1.4s linear infinite; }
@@ -2688,14 +2703,40 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
       titleEl.textContent = ok + '/' + total + ' agents done' + (fail > 0 ? ' (' + fail + ' failed)' : '');
     }
     updateAgentPanel(job);
-    if (job.rate_prompt) {
-      let rateEl = panel.querySelector('.agent-rate-prompt');
-      if (!rateEl) {
-        rateEl = document.createElement('div');
-        rateEl.className = 'agent-rate-prompt';
-        panel.appendChild(rateEl);
-      }
-      rateEl.textContent = job.rate_prompt;
+    if (job.rate_prompt && !panel.querySelector('.agent-rate-prompt')) {
+      const rateEl = document.createElement('div');
+      rateEl.className = 'agent-rate-prompt';
+      rateEl.innerHTML =
+        '<span class="agent-rate-label">Rate this breakdown:</span>' +
+        '<span class="agent-rate-stars">' +
+        [1,2,3,4,5].map(n =>
+          '<button class="agent-rate-star" data-rating="' + n + '" title="' + n + ' star' + (n > 1 ? 's' : '') + '">\u2606</button>'
+        ).join('') +
+        '</span>';
+      panel.appendChild(rateEl);
+      // Hover highlight
+      const stars = rateEl.querySelectorAll('.agent-rate-star');
+      stars.forEach((btn, i) => {
+        btn.addEventListener('mouseenter', () => {
+          stars.forEach((s, j) => s.classList.toggle('hovered', j <= i));
+        });
+        btn.addEventListener('mouseleave', () => {
+          stars.forEach(s => s.classList.remove('hovered'));
+        });
+        btn.addEventListener('click', async () => {
+          const rating = parseInt((btn as HTMLElement).dataset.rating || '0', 10);
+          try {
+            await fetch('http://localhost:3131/rate', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({job_id: jobId, rating}),
+            });
+          } catch (_) {}
+          rateEl.innerHTML = '<span class="agent-rate-done">' +
+            '\u2605'.repeat(rating) + '\u2606'.repeat(5 - rating) +
+            '  Rating saved \u2014 Jarvis will learn from this</span>';
+        });
+      });
     }
   }
 

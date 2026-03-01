@@ -8,8 +8,12 @@
 import json
 import sys
 import threading
+import time
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
+
+# Phase 20: track jobs that have already been rated via the star UI
+_rated_job_ids: set = set()
 
 # Force UTF-8 stdout so emoji in Claude responses don't crash on Windows cp1252
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -181,10 +185,12 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json(404, {"error": "Job not found"})
                 return
-            # Phase 13: include rating prompt when job is finished
+            # Phase 20: include rate_prompt (boolean) 30s after completion, if not yet rated
             result = dict(job)
             if result.get("status") in ("done", "failed"):
-                result["rate_prompt"] = "How did that go? Rate the agent breakdown: `/rate 1` – `/rate 5`"
+                finished_at = result.get("finished_at") or 0
+                if time.time() - finished_at >= 30 and job_id not in _rated_job_ids:
+                    result["rate_prompt"] = True
             self._send_json(200, result)
 
         else:
@@ -396,6 +402,44 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                 agent_job_id = start_vscode_agent_job(message, workspace_root)
                 print(f"\n[VS Code] /run-agents job: {agent_job_id}")
                 self._send_json(200, {"job_id": agent_job_id, "status": "starting"})
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/rate":
+            # Phase 20 — star rating from VS Code agent panel
+            try:
+                body = self._read_body()
+                job_id = body.get("job_id", "")
+                rating = body.get("rating")
+                if not job_id or rating is None:
+                    self._send_json(400, {"error": "job_id and rating required"})
+                    return
+                try:
+                    rating = int(rating)
+                    if not 1 <= rating <= 5:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    self._send_json(400, {"error": "rating must be 1-5"})
+                    return
+                from tools.agent_jobs import get_job
+                from tools.ratings import save_rating, extract_agent_roles
+                job = get_job(job_id)
+                if not job:
+                    self._send_json(404, {"error": "job not found"})
+                    return
+                agent_defs = [{"id": aid, "task": a.get("task", "")}
+                              for aid, a in job.get("agents", {}).items()]
+                save_rating(
+                    task_summary=job.get("task", "")[:60],
+                    agent_count=len(agent_defs),
+                    rating=rating,
+                    workspace_root=job.get("workspace_root", ""),
+                    roles=extract_agent_roles(agent_defs),
+                )
+                _rated_job_ids.add(job_id)
+                self._send_json(200, {"ok": True})
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
             except Exception as e:

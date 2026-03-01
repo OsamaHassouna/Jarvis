@@ -1,7 +1,7 @@
 # Jarvis — Phases 16–20 Plan
 **Authored:** March 2026
 **Starting state:** Phase 15 complete, 275/275 tests passing
-**Current state:** Phase 19 complete, 334/334 tests passing
+**Current state:** Phase 20 complete, 346/346 tests passing
 
 ---
 
@@ -149,7 +149,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 20 — Deeper Learning (Ratings Upgrade) ✦ START HERE
+## Phase 20 — Deeper Learning (Ratings Upgrade) ✅ COMPLETE
 
 **Goal:** Ratings actually influence agent breakdown decisions, not just add advisory comments.
 
@@ -202,4 +202,4 @@ Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20 → (Phase 14 if ne
 | Phase 17 | 16 | 306 ✅ |
 | Phase 18 | 14 | 320 ✅ |
 | Phase 19 | 14 | 334 ✅ |
-| Phase 20 | ~9 | ~343 |
+| Phase 20 | 12 | 346 ✅ |

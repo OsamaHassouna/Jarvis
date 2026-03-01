@@ -1115,11 +1115,13 @@ def handle_rating_command(message: str) -> str | None:
                 "No recent complex task to rate.\n\n"
                 "Run a multi-agent task first, then use `/rate 1-5` to record how it went."
             )
+        from tools.ratings import extract_agent_roles
         save_rating(
             _pending_rating["task_summary"],
             _pending_rating["agent_count"],
             n,
             _pending_rating.get("workspace", ""),
+            roles=extract_agent_roles(get_last_agent_defs()),
         )
         stars = "★" * n + "☆" * (5 - n)
         return (

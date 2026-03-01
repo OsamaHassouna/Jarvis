@@ -30,11 +30,11 @@ def test_save_rating_stores_entry():
     assert entries[0]["rating"] == 3
 
 
-def test_save_rating_caps_at_50():
+def test_save_rating_caps_at_100():
     from tools.ratings import save_rating, list_ratings
-    for i in range(55):
+    for i in range(105):
         save_rating(f"task {i}", 2, 3)
-    assert len(list_ratings()) == 50
+    assert len(list_ratings()) == 100
 
 
 def test_save_rating_rejects_out_of_range():
