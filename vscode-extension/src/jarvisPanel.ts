@@ -2724,12 +2724,12 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
           stars.forEach(s => s.classList.remove('hovered'));
         });
         btn.addEventListener('click', async () => {
-          const rating = parseInt((btn as HTMLElement).dataset.rating || '0', 10);
+          const rating = parseInt(btn.getAttribute('data-rating') || '0', 10);
           try {
             await fetch('http://localhost:3131/rate', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({job_id: jobId, rating}),
+              body: JSON.stringify({job_id: job.job_id, rating}),
             });
           } catch (_) {}
           rateEl.innerHTML = '<span class="agent-rate-done">' +
