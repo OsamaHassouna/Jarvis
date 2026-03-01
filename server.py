@@ -24,6 +24,7 @@ from tools.sessions import (
     create_session, get_session, list_all_sessions,
     set_active_session, close_session, delete_session,
     get_active_session_id, append_message as session_append_message,
+    update_session_name,
 )
 from tools.token_tracker import tracker
 
@@ -247,6 +248,23 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
                     return
                 deleted = delete_session(session_id, workspace_root, is_global)
                 self._send_json(200, {"deleted": deleted})
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        elif self.path == "/sessions/rename":
+            try:
+                body           = self._read_body()
+                session_id     = body.get("session_id", "")
+                workspace_root = body.get("workspace_root", "")
+                is_global      = bool(body.get("is_global", False))
+                new_name       = body.get("name", "").strip()[:80]
+                if not session_id:
+                    self._send_json(400, {"error": "session_id is required"})
+                    return
+                update_session_name(session_id, workspace_root, is_global, new_name)
+                self._send_json(200, {"ok": True, "name": new_name})
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
             except Exception as e:

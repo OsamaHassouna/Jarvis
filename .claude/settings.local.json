@@ -5,7 +5,8 @@
       "Bash(ls -la /d/Personal/Jarvis/tests/test_*.py)",
       "Bash(npm run compile)",
       "Bash(npx @vscode/vsce package --no-dependencies --allow-missing-repository --out jarvis-assistant-0.3.0.vsix)",
-      "Bash(code --install-extension jarvis-assistant-0.3.0.vsix --force)"
+      "Bash(code --install-extension jarvis-assistant-0.3.0.vsix --force)",
+      "Bash(npx vsce package --no-dependencies)"
     ]
   }
 }

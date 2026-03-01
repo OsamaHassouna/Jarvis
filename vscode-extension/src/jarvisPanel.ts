@@ -89,6 +89,8 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
                 await this._loadSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
             } else if (msg.command === 'deleteSession') {
                 await this._deleteSession(msg.sessionId, msg.workspaceRoot, msg.isGlobal ?? false);
+            } else if (msg.command === 'renameSession') {
+                await this._renameSession(msg.name ?? '');
             } else if (msg.command === 'openFile') {
                 try {
                     const uri = vscode.Uri.file(msg.path);
@@ -301,6 +303,24 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private async _renameSession(name: string): Promise<void> {
+        if (!this._currentSessionId || !name) { return; }
+        try {
+            await fetch(`${JARVIS_SERVER}/sessions/rename`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: this._currentSessionId,
+                    workspace_root: this._getWorkspaceRoot(),
+                    is_global: this._currentIsGlobal,
+                    name,
+                }),
+            });
+        } catch {
+            // best-effort
+        }
+    }
+
     // Phase 7: Apply a code block to the active editor file
     private async _applyCode(code: string): Promise<void> {
         const editor = this._lastKnownEditor ?? vscode.window.activeTextEditor;
@@ -472,6 +492,22 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     white-space: nowrap;
     max-width: 110px;
     color: #4ec9b0;
+    cursor: pointer;
+  }
+  #session-name:hover { opacity: 1; }
+  .session-name-input {
+    font-size: 10px;
+    font-family: var(--vscode-font-family);
+    background: var(--vscode-input-background);
+    color: #4ec9b0;
+    border: 1px solid var(--vscode-focusBorder);
+    border-radius: 3px;
+    padding: 1px 5px;
+    outline: none;
+    width: 110px;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: normal;
   }
 
   #header-right {
@@ -657,6 +693,42 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     font-size: 10px;
     opacity: 0.45;
   }
+  .session-delete-btn {
+    display: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground);
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    transition: color 0.1s, background 0.1s;
+  }
+  .session-item:hover .session-delete-btn { display: flex; align-items: center; }
+  .session-delete-btn:hover { color: #f48771; background: rgba(244,135,113,0.1); }
+
+  /* ── Sessions search ── */
+  #sessions-search-wrap {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+    flex-shrink: 0;
+  }
+  #sessions-search {
+    width: 100%;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.35));
+    border-radius: 5px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: var(--vscode-font-family);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  #sessions-search:focus { border-color: var(--vscode-focusBorder); }
+  #sessions-search::placeholder { color: var(--vscode-input-placeholderForeground); }
 
   /* ── Messages area ── */
   #messages-wrap {
@@ -1318,6 +1390,10 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <div id="sessions-search-wrap">
+    <input id="sessions-search" type="text" placeholder="Search sessions…" autocomplete="off" spellcheck="false">
+  </div>
+
   <div id="sessions-list-container"></div>
 
 </div><!-- end #sessions-view -->
@@ -1342,6 +1418,7 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
   const sessView    = document.getElementById('sessions-view');
   const backBtn     = document.getElementById('back-btn');
   const sessList    = document.getElementById('sessions-list-container');
+  const sessSearch  = document.getElementById('sessions-search');
   const newSessDDb  = document.getElementById('new-sess-dropdown-btn');
   const newSessDd   = document.getElementById('new-sess-dropdown');
 
@@ -1687,6 +1764,66 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
     newSessBtn.textContent = '+';
   }
 
+  // ── Inline session rename (click on session name in header) ──
+  document.getElementById('session-name').addEventListener('click', () => {
+    if (!currentSessionId) return;
+    const nameEl = document.getElementById('session-name');
+    const currentName = nameEl.textContent.trim();
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = currentName;
+    inp.className = 'session-name-input';
+    inp.maxLength = 80;
+    nameEl.textContent = '';
+    nameEl.appendChild(inp);
+    inp.focus();
+    inp.select();
+
+    let committed = false;
+    function commit() {
+      if (committed) return;
+      committed = true;
+      const newName = inp.value.trim();
+      nameEl.textContent = newName || currentName;
+      if (newName && newName !== currentName) {
+        vscode.postMessage({ command: 'renameSession', name: newName });
+      }
+    }
+    inp.addEventListener('blur', commit);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { inp.blur(); }
+      if (e.key === 'Escape') { committed = true; nameEl.textContent = currentName; }
+    });
+  });
+
+  // ── Sessions search / filter ──
+  sessSearch.addEventListener('input', () => {
+    const q = sessSearch.value.trim().toLowerCase();
+    let lastGroupLabel = null;
+    let groupHasVisible = false;
+
+    sessList.childNodes.forEach(node => {
+      if (!(node instanceof Element)) return;
+      if (node.classList.contains('session-group-label')) {
+        // Decide visibility of previous group label
+        if (lastGroupLabel) {
+          lastGroupLabel.style.display = groupHasVisible ? '' : 'none';
+        }
+        lastGroupLabel = node;
+        groupHasVisible = false;
+      } else if (node.classList.contains('session-item')) {
+        const name = (node.querySelector('.session-item-name')?.textContent || '').toLowerCase();
+        const visible = !q || name.includes(q);
+        node.style.display = visible ? '' : 'none';
+        if (visible) groupHasVisible = true;
+      }
+    });
+    // Handle last group label
+    if (lastGroupLabel) {
+      lastGroupLabel.style.display = groupHasVisible ? '' : 'none';
+    }
+  });
+
   // ── History button → sessions view ──
   histBtn.addEventListener('click', () => {
     showSessionsView();
@@ -1706,6 +1843,7 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
   function showSessionsView() {
     chatView.style.display = 'none';
     sessView.style.display = 'flex';
+    sessSearch.value = '';
     vscode.postMessage({ command: 'openSessionDrawer' });
   }
 
@@ -1819,13 +1957,35 @@ export class JarvisViewProvider implements vscode.WebviewViewProvider {
       '<div class="session-item-info">' +
         '<div class="session-item-name">' + escHtml(sess.name || '(untitled)') + '</div>' +
         '<div class="session-item-time">' + escHtml(subLine) + '</div>' +
-      '</div>';
+      '</div>' +
+      '<button class="session-delete-btn" title="Delete session">&#x1F5D1;</button>';
 
-    item.addEventListener('click', () => {
+    // Click on item body → load session
+    item.querySelector('.session-item-info').addEventListener('click', () => {
       const effectiveWsRoot = sess.workspace_root || workspaceRoot;
       vscode.postMessage({ command: 'loadSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
       showChatView();
     });
+
+    // Click on delete button → delete + remove from DOM
+    item.querySelector('.session-delete-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const effectiveWsRoot = sess.workspace_root || workspaceRoot;
+      vscode.postMessage({ command: 'deleteSession', sessionId: sess.id, workspaceRoot: effectiveWsRoot, isGlobal });
+      item.remove();
+      // If this was the active session, clear header name
+      if (sess.id === currentSessionId) {
+        const nameEl = document.getElementById('session-name');
+        if (nameEl) nameEl.textContent = '';
+      }
+      // Hide group label if no items left in it
+      const prev = item.previousElementSibling;
+      if (prev && prev.classList.contains('session-group-label')) {
+        const next = prev.nextElementSibling;
+        if (!next || next.classList.contains('session-group-label')) { prev.remove(); }
+      }
+    });
+
     return item;
   }
 

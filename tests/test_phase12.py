@@ -190,7 +190,7 @@ def _get(port, path):
         return json.loads(r.read())
 
 
-@patch("orchestrator.start_vscode_agent_job", return_value="job_abc12345")
+@patch("server.start_vscode_agent_job", return_value="job_abc12345")
 def test_run_agents_returns_job_id(mock_start):
     fix = _ServerFixture()
     try:
@@ -201,7 +201,7 @@ def test_run_agents_returns_job_id(mock_start):
         fix.stop()
 
 
-@patch("orchestrator.start_vscode_agent_job", return_value="job_abc12345")
+@patch("server.start_vscode_agent_job", return_value="job_abc12345")
 def test_run_agents_missing_message_returns_400(mock_start):
     import urllib.request, urllib.error
     fix = _ServerFixture()
