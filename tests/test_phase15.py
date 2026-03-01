@@ -162,35 +162,41 @@ def test_stale_test_detector_skips_old_source(tmp_path):
     assert notif_mod.get_notifications() == []
 
 
-# ── tools/watcher: _get_spec_name ─────────────────────────────────────────────
+# ── tools/watcher: _get_spec_names ────────────────────────────────────────────
 
-def test_get_spec_name_typescript():
-    from tools.watcher import _get_spec_name
-    assert _get_spec_name("auth.service.ts") == "auth.service.spec.ts"
-    assert _get_spec_name("app.component.ts") == "app.component.spec.ts"
-
-
-def test_get_spec_name_skips_spec_and_declaration():
-    from tools.watcher import _get_spec_name
-    assert _get_spec_name("auth.service.spec.ts") is None
-    assert _get_spec_name("types.d.ts") is None
+def test_get_spec_names_typescript():
+    from tools.watcher import _get_spec_names
+    names = _get_spec_names("auth.service.ts")
+    assert "auth.service.spec.ts" in names
+    assert "auth.service.test.ts" in names
+    names2 = _get_spec_names("app.component.ts")
+    assert "app.component.spec.ts" in names2
 
 
-def test_get_spec_name_csharp():
-    from tools.watcher import _get_spec_name
-    assert _get_spec_name("AuthService.cs") == "AuthServiceTests.cs"
+def test_get_spec_names_skips_spec_and_declaration():
+    from tools.watcher import _get_spec_names
+    assert _get_spec_names("auth.service.spec.ts") == []
+    assert _get_spec_names("auth.service.test.ts") == []
+    assert _get_spec_names("types.d.ts") == []
 
 
-def test_get_spec_name_skips_test_files():
-    from tools.watcher import _get_spec_name
-    assert _get_spec_name("AuthServiceTests.cs") is None
-    assert _get_spec_name("LoginSpec.cs") is None
+def test_get_spec_names_csharp():
+    from tools.watcher import _get_spec_names
+    names = _get_spec_names("AuthService.cs")
+    assert "AuthServiceTests.cs" in names
+    assert "AuthService.Test.cs" in names
 
 
-def test_get_spec_name_unknown_ext():
-    from tools.watcher import _get_spec_name
-    assert _get_spec_name("README.md") is None
-    assert _get_spec_name("app.js") is None
+def test_get_spec_names_skips_test_files():
+    from tools.watcher import _get_spec_names
+    assert _get_spec_names("AuthServiceTests.cs") == []
+    assert _get_spec_names("LoginSpec.cs") == []
+
+
+def test_get_spec_names_unknown_ext():
+    from tools.watcher import _get_spec_names
+    assert _get_spec_names("README.md") == []
+    assert _get_spec_names("styles.css") == []
 
 
 # ── tools/watcher: run_checks_once on non-existent path ───────────────────────

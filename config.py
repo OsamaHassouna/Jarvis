@@ -2,6 +2,7 @@
 # Handles all configuration and environment variables
 # We load the API key from .env so it's never hardcoded in our code
 
+import json
 import os
 from dotenv import load_dotenv
 
@@ -38,3 +39,52 @@ SERVER_PORT = 3131
 # Validate that API key exists
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY not found in .env file. Please add it.")
+
+# ── Phase 19: Workspace config ─────────────────────────────────────────────────
+
+_workspace_configs: dict = {}  # workspace_root → merged config dict (with "_mtime" key)
+
+_WATCHER_DEFAULTS = {
+    "stale_test_gap_hours": 24,
+    "long_branch_days": 5,
+    "many_files_count": 8,
+    "ignore_branches": ["main", "master", "develop"],
+}
+
+_NOTIFICATIONS_DEFAULTS = {
+    "expire_hours": 168,
+}
+
+
+def load_workspace_config(workspace_root: str) -> dict:
+    """
+    Load jarvis.config.json from workspace_root. Merges with defaults.
+    Hot-reloads when the file's mtime changes — no server restart needed.
+    Returns dict with "watcher" and "notifications" sub-dicts.
+    """
+    config_path = os.path.join(workspace_root, "jarvis.config.json")
+
+    try:
+        mtime = os.path.getmtime(config_path)
+    except OSError:
+        mtime = None
+
+    cached = _workspace_configs.get(workspace_root)
+    if cached is not None and cached.get("_mtime") == mtime:
+        return cached
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception:
+        raw = {}
+
+    merged = {
+        "watcher": {**_WATCHER_DEFAULTS, **raw.get("watcher", {})},
+        "notifications": {**_NOTIFICATIONS_DEFAULTS, **raw.get("notifications", {})},
+        "_mtime": mtime,
+    }
+    _workspace_configs[workspace_root] = merged
+    return merged

@@ -1,6 +1,7 @@
 # Jarvis — Phases 16–20 Plan
 **Authored:** March 2026
 **Starting state:** Phase 15 complete, 275/275 tests passing
+**Current state:** Phase 19 complete, 334/334 tests passing
 
 ---
 
@@ -111,7 +112,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 19 — Configurable Watcher & Smart Notifications ✦ START HERE
+## Phase 19 — Configurable Watcher & Smart Notifications ✅ COMPLETE
 
 **Goal:** Watcher thresholds tunable per workspace. Smarter detectors.
 
@@ -148,7 +149,7 @@ Say: **"Continue building Jarvis — see phases16-20_plan.md for what's next"**
 
 ---
 
-## Phase 20 — Deeper Learning (Ratings Upgrade)
+## Phase 20 — Deeper Learning (Ratings Upgrade) ✦ START HERE
 
 **Goal:** Ratings actually influence agent breakdown decisions, not just add advisory comments.
 
@@ -199,6 +200,6 @@ Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20 → (Phase 14 if ne
 | Current (end of P15) | — | 275 |
 | Phase 16 | 15 | 290 ✅ |
 | Phase 17 | 16 | 306 ✅ |
-| Phase 18 | 14  | 320 ✅ |
-| Phase 19 | ~11 | ~320 |
-| Phase 20 | ~9  | ~329 |
+| Phase 18 | 14 | 320 ✅ |
+| Phase 19 | 14 | 334 ✅ |
+| Phase 20 | ~9 | ~343 |

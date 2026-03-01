@@ -77,13 +77,14 @@ def add_notification(type_: str, message: str, workspace: str = "",
     return notif_id
 
 
-def get_notifications(workspace: str = "") -> list:
+def get_notifications(workspace: str = "", expire_hours: float | None = None) -> list:
     """
     Return all notifications, optionally filtered to a workspace.
     Notifications with no workspace are shown everywhere.
-    Auto-expires entries older than 7 days.
+    Auto-expires entries older than expire_hours (default 168h / 7 days).
     """
-    cutoff = time.time() - _SEVEN_DAYS
+    ttl = (expire_hours * 3600) if expire_hours is not None else _SEVEN_DAYS
+    cutoff = time.time() - ttl
     with _lock:
         global _notifications
         before = len(_notifications)

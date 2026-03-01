@@ -1,5 +1,6 @@
 """
 tools/watcher.py — Phase 15: Proactive background watcher.
+Phase 19: Config-driven thresholds, branch filtering, multi-framework spec detection.
 
 Runs periodic checks every 5 minutes on registered project directories.
 Adds notifications to tools/notifications.py when patterns are detected.
@@ -7,9 +8,9 @@ Adds notifications to tools/notifications.py when patterns are detected.
 No external dependencies — uses os.walk, subprocess (for git), and threading.
 
 Detectors:
-  1. Stale tests      — source file modified but spec file not updated (gap > 24h)
-  2. Long-running branch — no git commit for 5+ days with uncommitted changes
-  3. Many uncommitted  — 8+ uncommitted files with no commit for 24+ hours
+  1. Stale tests      — source file modified but spec/test file not updated (gap > threshold)
+  2. Long-running branch — no git commit for N+ days with uncommitted changes
+  3. Many uncommitted  — N+ uncommitted files with no commit for 24+ hours
 """
 
 import os
@@ -22,8 +23,10 @@ from tools.notifications import add_notification
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _CHECK_INTERVAL = 300          # seconds between full check cycles (5 minutes)
-_STALE_TEST_GAP = 86400        # spec must be > 24h older than source
 _SOURCE_RECENT = 172800        # source must have been modified within 48h
+
+# Default thresholds (overridable via jarvis.config.json)
+_STALE_TEST_GAP = 86400        # spec must be > 24h older than source
 _LONG_BRANCH_DAYS = 5          # no commit for this many days = long-running
 _MANY_FILES_COUNT = 8          # uncommitted file threshold
 _MANY_FILES_HOURS = 24         # hours since last commit for "many uncommitted" check
@@ -63,9 +66,13 @@ def run_checks_once(workspace_root: str) -> None:
     """Run all detectors on a single workspace immediately (also used in tests)."""
     if not os.path.isdir(workspace_root):
         return
-    _check_stale_tests(workspace_root)
-    _check_long_running_branch(workspace_root)
-    _check_many_uncommitted(workspace_root)
+    # Phase 19: hot-reload config on each cycle
+    from config import load_workspace_config
+    cfg = load_workspace_config(workspace_root)
+    wcfg = cfg["watcher"]
+    _check_stale_tests(workspace_root, wcfg)
+    _check_long_running_branch(workspace_root, wcfg)
+    _check_many_uncommitted(workspace_root, wcfg)
 
 
 # ── Internal loop ──────────────────────────────────────────────────────────────
@@ -84,12 +91,16 @@ def _watcher_loop() -> None:
 
 # ── Detector 1: Stale test files ──────────────────────────────────────────────
 
-def _check_stale_tests(workspace_root: str) -> None:
+def _check_stale_tests(workspace_root: str, cfg: dict | None = None) -> None:
     """
     Walk source files modified in the last 48h.
-    If the matching spec/test file exists but is > 24h older, notify.
-    Covers TypeScript (.ts / .spec.ts) and C# (.cs / Tests.cs).
+    If any matching spec/test file exists but is > threshold older, notify.
+    Covers TypeScript (.ts / .spec.ts / .test.ts), JavaScript (.js),
+    and C# (.cs / Tests.cs / .Test.cs).
     """
+    if cfg is None:
+        cfg = {}
+    stale_gap = cfg.get("stale_test_gap_hours", 24) * 3600
     now = time.time()
 
     for dirpath, dirnames, filenames in os.walk(workspace_root):
@@ -97,12 +108,11 @@ def _check_stale_tests(workspace_root: str) -> None:
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
 
         for fname in filenames:
-            spec_name = _get_spec_name(fname)
-            if spec_name is None:
+            spec_names = _get_spec_names(fname)
+            if not spec_names:
                 continue
 
             fpath = os.path.join(dirpath, fname)
-            spec_path = os.path.join(dirpath, spec_name)
 
             try:
                 src_mtime = os.path.getmtime(fpath)
@@ -113,57 +123,80 @@ def _check_stale_tests(workspace_root: str) -> None:
             if now - src_mtime > _SOURCE_RECENT:
                 continue
 
-            if not os.path.exists(spec_path):
-                continue
+            for spec_name in spec_names:
+                spec_path = os.path.join(dirpath, spec_name)
+                if not os.path.exists(spec_path):
+                    continue
 
-            try:
-                spec_mtime = os.path.getmtime(spec_path)
-            except OSError:
-                continue
+                try:
+                    spec_mtime = os.path.getmtime(spec_path)
+                except OSError:
+                    continue
 
-            gap = src_mtime - spec_mtime
-            if gap <= _STALE_TEST_GAP:
-                continue
+                gap = src_mtime - spec_mtime
+                if gap <= stale_gap:
+                    continue
 
-            key = f"stale_test:{fpath}:{int(src_mtime)}"
-            if key in _notified_keys:
-                continue
-            _notified_keys.add(key)
+                key = f"stale_test:{fpath}:{int(src_mtime)}"
+                if key in _notified_keys:
+                    break
+                _notified_keys.add(key)
 
-            rel = os.path.relpath(fpath, workspace_root)
-            days = max(1, int(gap // 86400))
-            add_notification(
-                type_="stale_test",
-                message=(
-                    f"{rel} was modified but {spec_name} "
-                    f"hasn't been updated in {days} day{'s' if days != 1 else ''}"
-                ),
-                workspace=workspace_root,
-                severity="info",
-            )
+                rel = os.path.relpath(fpath, workspace_root)
+                days = max(1, int(gap // 86400))
+                add_notification(
+                    type_="stale_test",
+                    message=(
+                        f"{rel} was modified but {spec_name} "
+                        f"hasn't been updated in {days} day{'s' if days != 1 else ''}"
+                    ),
+                    workspace=workspace_root,
+                    severity="info",
+                )
+                break  # one notification per source file
 
 
-def _get_spec_name(fname: str) -> str | None:
-    """Return the expected spec filename for a source file, or None if not applicable."""
-    # TypeScript: foo.ts → foo.spec.ts  (skip already-spec and declaration files)
-    if fname.endswith(".ts") and not fname.endswith(".spec.ts") and not fname.endswith(".d.ts"):
-        return fname[:-3] + ".spec.ts"
-    # C#: FooService.cs → FooServiceTests.cs  (skip test files)
-    if fname.endswith(".cs") and not fname.endswith("Tests.cs") and not fname.endswith("Spec.cs"):
-        return fname[:-3] + "Tests.cs"
-    return None
+def _get_spec_names(fname: str) -> list[str]:
+    """Return expected spec filenames for a source file. Empty list if not applicable."""
+    # TypeScript: foo.ts → foo.spec.ts + foo.test.ts
+    if fname.endswith(".ts") and not (
+        fname.endswith(".spec.ts") or fname.endswith(".test.ts") or fname.endswith(".d.ts")
+    ):
+        stem = fname[:-3]
+        return [stem + ".spec.ts", stem + ".test.ts"]
+    # JavaScript: foo.js → foo.spec.js + foo.test.js
+    if fname.endswith(".js") and not (
+        fname.endswith(".spec.js") or fname.endswith(".test.js")
+    ):
+        stem = fname[:-3]
+        return [stem + ".spec.js", stem + ".test.js"]
+    # C#: FooService.cs → FooServiceTests.cs + FooService.Test.cs
+    if fname.endswith(".cs") and not (
+        fname.endswith("Tests.cs") or fname.endswith("Spec.cs") or fname.endswith(".Test.cs")
+    ):
+        stem = fname[:-3]
+        return [stem + "Tests.cs", stem + ".Test.cs"]
+    return []
 
 
 # ── Detector 2: Long-running branch ───────────────────────────────────────────
 
-def _check_long_running_branch(workspace_root: str) -> None:
-    """Notify if last commit > 5 days ago AND there are uncommitted changes."""
+def _check_long_running_branch(workspace_root: str, cfg: dict | None = None) -> None:
+    """Notify if last commit > N days ago AND there are uncommitted changes."""
+    if cfg is None:
+        cfg = {}
+    ignore_branches = cfg.get("ignore_branches", [])
+    days_threshold = cfg.get("long_branch_days", _LONG_BRANCH_DAYS)
     try:
+        branch = _git_branch(workspace_root)
+        if branch and branch in ignore_branches:
+            return
+
         last_ts = _git_last_commit_ts(workspace_root)
         if last_ts is None:
             return
         days_since = (time.time() - last_ts) / 86400
-        if days_since < _LONG_BRANCH_DAYS:
+        if days_since < days_threshold:
             return
 
         changed = _git_changed_count(workspace_root)
@@ -175,11 +208,11 @@ def _check_long_running_branch(workspace_root: str) -> None:
             return
         _notified_keys.add(key)
 
-        branch = _git_branch(workspace_root) or "current branch"
+        branch_name = branch or "current branch"
         add_notification(
             type_="long_running_branch",
             message=(
-                f"{branch}: {changed} uncommitted file(s), "
+                f"{branch_name}: {changed} uncommitted file(s), "
                 f"no commit in {int(days_since)} days"
             ),
             workspace=workspace_root,
@@ -191,11 +224,19 @@ def _check_long_running_branch(workspace_root: str) -> None:
 
 # ── Detector 3: Many uncommitted files ────────────────────────────────────────
 
-def _check_many_uncommitted(workspace_root: str) -> None:
-    """Notify if 8+ files are uncommitted and last commit was > 24h ago."""
+def _check_many_uncommitted(workspace_root: str, cfg: dict | None = None) -> None:
+    """Notify if N+ files are uncommitted and last commit was > 24h ago."""
+    if cfg is None:
+        cfg = {}
+    ignore_branches = cfg.get("ignore_branches", [])
+    count_threshold = cfg.get("many_files_count", _MANY_FILES_COUNT)
     try:
+        branch = _git_branch(workspace_root)
+        if branch and branch in ignore_branches:
+            return
+
         changed = _git_changed_count(workspace_root)
-        if changed < _MANY_FILES_COUNT:
+        if changed < count_threshold:
             return
 
         last_ts = _git_last_commit_ts(workspace_root)

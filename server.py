@@ -156,9 +156,14 @@ class JarvisHTTPHandler(BaseHTTPRequestHandler):
 
         elif path == "/notifications":
             # Phase 15 — return pending notifications for this workspace
+            # Phase 19 — honour per-workspace expire_hours from jarvis.config.json
             workspace_root = unquote(qs.get("workspace_root", [""])[0])
             from tools.notifications import get_notifications
-            self._send_json(200, {"notifications": get_notifications(workspace_root)})
+            from config import load_workspace_config
+            expire_hours = None
+            if workspace_root:
+                expire_hours = load_workspace_config(workspace_root)["notifications"].get("expire_hours")
+            self._send_json(200, {"notifications": get_notifications(workspace_root, expire_hours=expire_hours)})
 
         elif path == "/agents/history":
             # Phase 17 — return completed job history from disk
