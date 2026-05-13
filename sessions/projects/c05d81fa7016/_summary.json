@@ -1,16 +1,8 @@
 {
-  "workspace_root": "d:\\Personal\\Jarvis",
-  "project_name": "Jarvis",
-  "last_updated": "2026-02-28T18:39:18",
+  "workspace_root": "/demo-c",
+  "project_name": "demo-c",
+  "last_updated": "",
   "cumulative_summary": "",
-  "active_session_id": "sess_a3092b81",
-  "sessions": [
-    {
-      "id": "sess_a3092b81",
-      "name": "Templates and Trigger Keywords",
-      "summary": "",
-      "created_at": "2026-02-27T23:54:36",
-      "updated_at": "2026-02-28T17:46:27"
-    }
-  ]
+  "active_session_id": "",
+  "sessions": []
 }

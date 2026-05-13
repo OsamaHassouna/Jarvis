@@ -1,23 +1,8 @@
 {
-  "workspace_root": "d:\\personal\\login-fullstack",
-  "project_name": "login-fullstack",
-  "last_updated": "2026-02-27T18:12:17",
-  "cumulative_summary": "**Project Summary:**\nFull-stack login application with Angular frontend (port 4200) and .NET Auth API backend (configurable port in launchSettings.json). Both services are operational and started using the `--o` flag to auto-open the browser. Default login credentials are admin@example.com / Password123. User has established a workflow for project startup and development is in progress. Session/chat history can be cleared as needed before restarting projects.",
-  "active_session_id": "sess_0bcc1425",
-  "sessions": [
-    {
-      "id": "sess_3c6321d0",
-      "name": "Full-Stack Login Project Setup",
-      "summary": "The user asked Jarvis to summarize the conversation in 2-3 concise sentences with no filler.\n\n**Summary:** The user and Jarvis discussed running an Angular frontend and .NET Auth API backend project, with commands queued to start both services on localhost:4200 and the API port respectively. After some back-and-forth on approvals and re-running commands with the `--o` flag for browser auto-opening, the user exited and has now returned to start the projects again.",
-      "created_at": "2026-02-27T03:34:47",
-      "updated_at": "2026-02-27T04:31:12"
-    },
-    {
-      "id": "sess_054cc418",
-      "name": "Project Setup and Login Credentials",
-      "summary": "This conversation covered starting a full-stack project (Angular frontend and .NET backend), retrieving login credentials (admin@example.com / Password123), troubleshooting a failed run, and clearing session/chat history before restarting the projects.",
-      "created_at": "2026-02-27T04:31:31",
-      "updated_at": "2026-02-27T18:10:43"
-    }
-  ]
+  "workspace_root": "/demo-b",
+  "project_name": "demo-b",
+  "last_updated": "",
+  "cumulative_summary": "",
+  "active_session_id": "",
+  "sessions": []
 }
