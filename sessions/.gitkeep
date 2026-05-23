@@ -1,0 +1,4 @@
+# Runtime session data lives here.
+# Each session is a JSON file written by tools/sessions.py.
+# Contents are gitignored (see .gitignore) — this .gitkeep just preserves
+# the directory in a fresh clone so the code paths that write here work.

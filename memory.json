@@ -1,20 +1,12 @@
 {
+  "__note": "This is the seed schema for a fresh Jarvis install. Fields are populated as you use Jarvis: 'user' (name + preferences + rules captured via /memory and /rules), 'projects' (per-project context detected via tools/project_scanner.py), 'history' (rolling conversation tail used to give Claude context), 'last_session' (ISO timestamp of the last interaction). The 'rules' array stores global rules; per-project rules live in .jarvisrules files at each project root. Safe to commit this stub. Do NOT commit a populated memory.json — add it to .gitignore if you want to keep personal data fully local.",
   "user": {
-    "name": "Demo User",
+    "name": "",
     "preferences": [],
     "experience_level": "intermediate",
     "rules": []
   },
   "projects": [],
-  "history": [
-    {
-      "role": "user",
-      "content": "hello"
-    },
-    {
-      "role": "assistant",
-      "content": "Hi! How can I help you today?"
-    }
-  ],
-  "last_session": "2026-01-01T00:00:00.000000"
+  "history": [],
+  "last_session": ""
 }

@@ -1,3 +1,40 @@
+# Secrets — never commit
 .env
+.env.local
+*.pem
+*.key
+
+# Python
 venv/
+.venv/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jarvis runtime data — generated as you use Jarvis
+# Schema/structure stays tracked (memory.json stub, sessions/.gitkeep) so a
+# fresh clone has a working layout. Actual session content + summaries are
+# personal and live only on disk.
+sessions/global/
+sessions/projects/
+sessions/agent_jobs_history.json
+sessions/notifications.json
+logs/
+*.log
+tmp/
+cache/
+
+# VS Code extension build artifacts
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
